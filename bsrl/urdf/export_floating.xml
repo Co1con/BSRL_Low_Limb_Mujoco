@@ -1,6 +1,13 @@
 <mujoco model="export_floating">
   <compiler angle="radian" meshdir="../meshes/"/>
 
+  <option timestep="0.001" integrator="RK4" gravity="0 0 -9.81"/>
+
+  <default>
+    <geom condim="3" friction="1.0 0.005 0.0001"/>
+    <motor ctrllimited="true" forcelimited="true"/>
+  </default>
+
   <asset>
     <mesh name="base_waist" content_type="model/stl" file="../meshes/base_waist.STL"/>
     <mesh name="link_right_hip_yaw" content_type="model/stl" file="../meshes/link_right_hip_yaw.STL"/>
@@ -18,11 +25,16 @@
   </asset>
 
   <worldbody>
+    <light name="key_light" pos="0 -3 4" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
+    <camera name="track" pos="2.5 -3.0 1.6" xyaxes="1 0.7 0 0 0 1" mode="trackcom"/>
+    <geom name="ground" type="plane" size="10 10 0.05" rgba="0.35 0.35 0.35 1"/>
+
     <body name="base_link" pos="0 0 0.881216">
       <inertial pos="-0.005769 1.1e-05 0.032981" quat="0.707107 0.707107 0 0" mass="4.02745" diaginertia="0.04708 0.047013 0.008222"/>
       <joint name="base_freejoint" type="free"/>
       <geom type="mesh" contype="0" conaffinity="0" group="1" rgba="0.65098 0.61961 0.58824 1" density="0" mesh="base_waist"/>
       <geom size="0.04 0.05 0.025" pos="0 0 -0.05" type="box" rgba="0.65098 0.61961 0.58824 1"/>
+      <site name="base_imu" pos="0 0 0" size="0.01" rgba="0 0.6 1 1"/>
       <body name="link_right_hip_yaw" pos="0 -0.13999 0.0538">
         <inertial pos="-0.093082 0.00043 -0.105932" quat="0.707107 0 0 0.707107" mass="1.72555" diaginertia="0.001553 0.001144 0.001112"/>
         <joint name="joint_right_hip_yaw" range="-0.4 0.6" actuatorfrcrange="-1000 1000"/>
@@ -95,4 +107,68 @@
       </body>
     </body>
   </worldbody>
+
+  <actuator>
+    <motor name="joint_right_hip_yaw_motor" joint="joint_right_hip_yaw" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_right_hip_roll_motor" joint="joint_right_hip_roll" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_right_hip_pitch_motor" joint="joint_right_hip_pitch" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_right_knee_pitch_motor" joint="joint_right_knee_pitch" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_right_ankle_pitch_motor" joint="joint_right_ankle_pitch" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_right_ankle_roll_motor" joint="joint_right_ankle_roll" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_left_hip_yaw_motor" joint="joint_left_hip_yaw" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_left_hip_roll_motor" joint="joint_left_hip_roll" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_left_hip_pitch_motor" joint="joint_left_hip_pitch" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_left_knee_pitch_motor" joint="joint_left_knee_pitch" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_left_ankle_pitch_motor" joint="joint_left_ankle_pitch" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+    <motor name="joint_left_ankle_roll_motor" joint="joint_left_ankle_roll" ctrlrange="-1000 1000" forcerange="-1000 1000"/>
+  </actuator>
+
+  <sensor>
+    <framequat name="base_quat" objtype="site" objname="base_imu"/>
+    <gyro name="base_gyro" site="base_imu"/>
+    <accelerometer name="base_accel" site="base_imu"/>
+
+    <jointpos name="joint_right_hip_yaw_pos" joint="joint_right_hip_yaw"/>
+    <jointpos name="joint_right_hip_roll_pos" joint="joint_right_hip_roll"/>
+    <jointpos name="joint_right_hip_pitch_pos" joint="joint_right_hip_pitch"/>
+    <jointpos name="joint_right_knee_pitch_pos" joint="joint_right_knee_pitch"/>
+    <jointpos name="joint_right_ankle_pitch_pos" joint="joint_right_ankle_pitch"/>
+    <jointpos name="joint_right_ankle_roll_pos" joint="joint_right_ankle_roll"/>
+    <jointpos name="joint_left_hip_yaw_pos" joint="joint_left_hip_yaw"/>
+    <jointpos name="joint_left_hip_roll_pos" joint="joint_left_hip_roll"/>
+    <jointpos name="joint_left_hip_pitch_pos" joint="joint_left_hip_pitch"/>
+    <jointpos name="joint_left_knee_pitch_pos" joint="joint_left_knee_pitch"/>
+    <jointpos name="joint_left_ankle_pitch_pos" joint="joint_left_ankle_pitch"/>
+    <jointpos name="joint_left_ankle_roll_pos" joint="joint_left_ankle_roll"/>
+
+    <jointvel name="joint_right_hip_yaw_vel" joint="joint_right_hip_yaw"/>
+    <jointvel name="joint_right_hip_roll_vel" joint="joint_right_hip_roll"/>
+    <jointvel name="joint_right_hip_pitch_vel" joint="joint_right_hip_pitch"/>
+    <jointvel name="joint_right_knee_pitch_vel" joint="joint_right_knee_pitch"/>
+    <jointvel name="joint_right_ankle_pitch_vel" joint="joint_right_ankle_pitch"/>
+    <jointvel name="joint_right_ankle_roll_vel" joint="joint_right_ankle_roll"/>
+    <jointvel name="joint_left_hip_yaw_vel" joint="joint_left_hip_yaw"/>
+    <jointvel name="joint_left_hip_roll_vel" joint="joint_left_hip_roll"/>
+    <jointvel name="joint_left_hip_pitch_vel" joint="joint_left_hip_pitch"/>
+    <jointvel name="joint_left_knee_pitch_vel" joint="joint_left_knee_pitch"/>
+    <jointvel name="joint_left_ankle_pitch_vel" joint="joint_left_ankle_pitch"/>
+    <jointvel name="joint_left_ankle_roll_vel" joint="joint_left_ankle_roll"/>
+
+    <actuatorfrc name="joint_right_hip_yaw_torque" actuator="joint_right_hip_yaw_motor"/>
+    <actuatorfrc name="joint_right_hip_roll_torque" actuator="joint_right_hip_roll_motor"/>
+    <actuatorfrc name="joint_right_hip_pitch_torque" actuator="joint_right_hip_pitch_motor"/>
+    <actuatorfrc name="joint_right_knee_pitch_torque" actuator="joint_right_knee_pitch_motor"/>
+    <actuatorfrc name="joint_right_ankle_pitch_torque" actuator="joint_right_ankle_pitch_motor"/>
+    <actuatorfrc name="joint_right_ankle_roll_torque" actuator="joint_right_ankle_roll_motor"/>
+    <actuatorfrc name="joint_left_hip_yaw_torque" actuator="joint_left_hip_yaw_motor"/>
+    <actuatorfrc name="joint_left_hip_roll_torque" actuator="joint_left_hip_roll_motor"/>
+    <actuatorfrc name="joint_left_hip_pitch_torque" actuator="joint_left_hip_pitch_motor"/>
+    <actuatorfrc name="joint_left_knee_pitch_torque" actuator="joint_left_knee_pitch_motor"/>
+    <actuatorfrc name="joint_left_ankle_pitch_torque" actuator="joint_left_ankle_pitch_motor"/>
+    <actuatorfrc name="joint_left_ankle_roll_torque" actuator="joint_left_ankle_roll_motor"/>
+  </sensor>
+
+  <keyframe>
+    <key name="default_stand" qpos="0 0 0.8635 1 0 0 0 0 0 -0.1 0.4 -0.3 0 0 0 -0.1 0.4 -0.3 0" ctrl="0 0 0 0 0 0 0 0 0 0 0 0"/>
+  </keyframe>
 </mujoco>
