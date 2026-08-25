@@ -17,6 +17,17 @@ import yaml
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_CONFIG_PATH = PROJECT_ROOT / "deploy" / "bsrl_hopf_deploy.yaml"
 DEFAULT_RENDER_FPS = 60.0
+COMMAND_PRINT_INTERVAL_S = 0.1
+KEY_CODES = {
+    "UP": 0x26,
+    "ARROWUP": 0x26,
+    "DOWN": 0x28,
+    "ARROWDOWN": 0x28,
+    "LEFT": 0x25,
+    "ARROWLEFT": 0x25,
+    "RIGHT": 0x27,
+    "ARROWRIGHT": 0x27,
+}
 
 
 def resolve_path(path: str) -> str:
@@ -35,9 +46,30 @@ def stage_assets_to_ascii_path(xml_path: str) -> tuple[tempfile.TemporaryDirecto
 
 
 def get_key_pressed(key: str) -> bool:
-    if len(key) != 1:
-        raise ValueError(f"Only single-character keys are supported, got '{key}'")
-    return bool(ctypes.windll.user32.GetAsyncKeyState(ord(key.upper())) & 0x8000)
+    key = normalize_key(key)
+    if not key:
+        return False
+
+    key_code = KEY_CODES.get(key.upper())
+    if key_code is None:
+        if len(key) != 1:
+            raise ValueError(f"Unsupported key '{key}'. Use one character or UP/DOWN/LEFT/RIGHT.")
+        key_code = ord(key.upper())
+    return bool(ctypes.windll.user32.GetAsyncKeyState(key_code) & 0x8000)
+
+
+def model_body_id(model: mujoco.MjModel, body_name: str) -> int:
+    body_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, body_name)
+    if body_id < 0:
+        raise ValueError(f"Body not found: {body_name}")
+    return body_id
+
+
+def normalize_key(key: object) -> str:
+    key_text = "" if key is None else str(key).strip()
+    if key_text.lower() in {"", "none", "off", "disable", "disabled"}:
+        return ""
+    return key_text
 
 
 def quat_conj(q: np.ndarray) -> np.ndarray:
@@ -67,6 +99,14 @@ def quat_rotate_inverse(q: np.ndarray, v: np.ndarray) -> np.ndarray:
 
 def projected_gravity(quat: np.ndarray) -> np.ndarray:
     return quat_rotate_inverse(quat, np.array([0.0, 0.0, -1.0], dtype=np.float64))
+
+
+def root_velocity_body(data: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
+    """返回根部机体系线速度和角速度，仅用于运行日志，不进入策略网络。"""
+    quat = data.qpos[3:7]
+    lin_vel_b = quat_rotate_inverse(quat, data.qvel[0:3])
+    ang_vel_b = data.qvel[3:6].copy()
+    return lin_vel_b, ang_vel_b
 
 
 def pd_control(
@@ -190,6 +230,81 @@ class RuntimeState:
     command: np.ndarray
 
 
+class CommandController:
+    def __init__(self, config: dict) -> None:
+        control_config = config.get("command_control", {})
+        self.debounce_s = float(control_config.get("debounce_s", 0.02))
+        self.vx_levels = np.asarray(control_config.get("lin_vel_x_levels", [0.0, float(config["walk_vx"])]), dtype=np.float32)
+        self.yaw_rate_step = float(control_config.get("yaw_rate_step", 0.1))
+        self.yaw_rate_limit = float(control_config.get("yaw_rate_limit", 0.5))
+        self.keys = {
+            "vx_up": normalize_key(control_config.get("increase_vx_key", "UP")),
+            "vx_down": normalize_key(control_config.get("decrease_vx_key", "DOWN")),
+            "yaw_left": normalize_key(control_config.get("yaw_left_key", "LEFT")),
+            "yaw_right": normalize_key(control_config.get("yaw_right_key", "RIGHT")),
+            "stop": normalize_key(control_config.get("stop_key", "U")),
+        }
+        self.last_trigger_time = {name: -float("inf") for name in self.keys}
+        self.vx_index = 0
+        self.yaw_rate = 0.0
+
+    @property
+    def vx(self) -> float:
+        return float(self.vx_levels[self.vx_index])
+
+    def reset(self, command: np.ndarray, config: dict) -> None:
+        command[:] = np.asarray(config["cmd_init"], dtype=np.float32)
+        self.vx_index = int(np.argmin(np.abs(self.vx_levels - command[0])))
+        self.yaw_rate = float(np.clip(command[2], -self.yaw_rate_limit, self.yaw_rate_limit))
+        command[0] = self.vx_levels[self.vx_index]
+        command[2] = self.yaw_rate
+        for name in self.last_trigger_time:
+            self.last_trigger_time[name] = -float("inf")
+
+    def update(self, command: np.ndarray) -> None:
+        now = time.perf_counter()
+        if self._consume_key("stop", now):
+            self.vx_index = 0
+            self.yaw_rate = 0.0
+        if self._consume_key("vx_up", now):
+            self.vx_index = min(self.vx_index + 1, self.vx_levels.size - 1)
+        if self._consume_key("vx_down", now):
+            self.vx_index = max(self.vx_index - 1, 0)
+        if self._consume_key("yaw_left", now):
+            self.yaw_rate = min(self.yaw_rate + self.yaw_rate_step, self.yaw_rate_limit)
+        if self._consume_key("yaw_right", now):
+            self.yaw_rate = max(self.yaw_rate - self.yaw_rate_step, -self.yaw_rate_limit)
+
+        # command = [vx, vy, yaw_rate]，按训练观测约定保持 y 方向速度为 0。
+        command[0] = self.vx_levels[self.vx_index]
+        command[1] = 0.0
+        command[2] = self.yaw_rate
+
+    def _consume_key(self, action: str, now: float) -> bool:
+        key = self.keys[action]
+        if not key or not get_key_pressed(key):
+            return False
+        if now - self.last_trigger_time[action] < self.debounce_s:
+            return False
+        self.last_trigger_time[action] = now
+        return True
+
+
+def configure_follow_camera(viewer: "mujoco.viewer.Handle", model: mujoco.MjModel, config: dict) -> None:
+    viewer_config = config.get("viewer", {})
+    camera_config = viewer_config.get("follow_camera", {})
+    if not bool(camera_config.get("enabled", True)):
+        return
+
+    body_id = model_body_id(model, str(camera_config.get("body", "base_link")))
+    with viewer.lock():
+        viewer.cam.type = mujoco.mjtCamera.mjCAMERA_TRACKING
+        viewer.cam.trackbodyid = body_id
+        viewer.cam.distance = float(camera_config.get("distance", 3.0))
+        viewer.cam.azimuth = float(camera_config.get("azimuth", 140.0))
+        viewer.cam.elevation = float(camera_config.get("elevation", -20.0))
+
+
 def require_model_layout(model: mujoco.MjModel, mujoco_joint_names: list[str], policy_joint_names: list[str]) -> None:
     if model.nq != 7 + len(policy_joint_names):
         raise ValueError(f"Expected nq={7 + len(policy_joint_names)}, got nq={model.nq}")
@@ -252,9 +367,9 @@ def build_observation(
     hopf_xy: np.ndarray,
     config: dict,
 ) -> np.ndarray:
-    # MuJoCo 自由基的角速度在全局系，这里转到机体系以匹配训练观测。
     quat = data.qpos[3:7]
-    omega = quat_rotate_inverse(quat, data.qvel[3:6]) * float(config["ang_vel_scale"])
+    # MuJoCo free joint 的 qvel[3:6] 已经是机体系角速度，对齐 IsaacLab 的 base_ang_vel。
+    omega = data.qvel[3:6] * float(config["ang_vel_scale"])
     gravity = projected_gravity(quat)
     cmd = state.command * np.asarray(config["cmd_scale"], dtype=np.float32)
     qj = (data.qpos[binding.qpos_addr] - default_angles) * float(config["dof_pos_scale"])
@@ -276,19 +391,8 @@ def run_policy(session: ort.InferenceSession, input_name: str, output_name: str,
     return session.run([output_name], {input_name: obs.reshape(1, -1)})[0].reshape(-1).astype(np.float32)
 
 
-def update_command(command: np.ndarray, config: dict) -> None:
-    command[:] = np.asarray(config["cmd_init"], dtype=np.float32)
-    try:
-        walking = get_key_pressed(str(config["walk_key"]))
-    except AttributeError:
-        walking = False
-
-    if walking:
-        command[0] = float(config["walk_vx"])
-
-
 def get_config_key_pressed(config: dict, key_name: str) -> bool:
-    key = config.get(key_name)
+    key = normalize_key(config.get(key_name))
     if not key:
         return False
 
@@ -334,6 +438,7 @@ def reset_runtime(
     binding: JointBinding,
     state: RuntimeState,
     hopf: MasterHopf,
+    command_controller: CommandController,
     default_angles: np.ndarray,
     root_height: float,
     config: dict,
@@ -348,7 +453,7 @@ def reset_runtime(
     state.target_q[:] = default_angles
     state.target_dq.fill(0.0)
     state.joint_effort.fill(0.0)
-    state.command[:] = np.asarray(config["cmd_init"], dtype=np.float32)
+    command_controller.reset(state.command, config)
     mujoco.mj_forward(model, data)
 
     if session is not None:
@@ -389,6 +494,7 @@ def main() -> None:
     policy_enabled = bool(config.get("policy_enabled", True)) and not args.stand_only
 
     state = create_runtime_state(config, default_angles, kds)
+    command_controller = CommandController(config)
     hopf = MasterHopf(config["hopf"])
     staged_assets, staged_xml_path = stage_assets_to_ascii_path(xml_path)
 
@@ -412,6 +518,7 @@ def main() -> None:
             binding,
             state,
             hopf,
+            command_controller,
             default_angles,
             root_height,
             config,
@@ -425,16 +532,19 @@ def main() -> None:
         sim_start_time = data.time
         next_frame_time = wall_start_time
         last_data_time = data.time
+        next_command_print_time = data.time
         reset_key_was_pressed = False
 
         with mujoco.viewer.launch_passive(model, data) as viewer:
             viewer.opt.geomgroup[3] = 0
+            configure_follow_camera(viewer, model, config)
             viewer.sync()
             if startup_pause_s > 0.0:
                 time.sleep(startup_pause_s)
                 wall_start_time = time.perf_counter()
                 sim_start_time = data.time
                 next_frame_time = wall_start_time
+                next_command_print_time = data.time
 
             while viewer.is_running() and (simulation_duration <= 0.0 or data.time - sim_start_time < simulation_duration):
                 reset_key_pressed = get_config_key_pressed(config, "reset_key")
@@ -449,6 +559,7 @@ def main() -> None:
                         binding,
                         state,
                         hopf,
+                        command_controller,
                         default_angles,
                         root_height,
                         config,
@@ -461,6 +572,7 @@ def main() -> None:
                     sim_start_time = data.time
                     next_frame_time = wall_start_time
                     last_data_time = data.time
+                    next_command_print_time = data.time
                     viewer.sync()
                     continue
 
@@ -474,7 +586,7 @@ def main() -> None:
                     counter += 1
 
                     if counter % control_decimation == 0:
-                        update_command(state.command, config)
+                        command_controller.update(state.command)
 
                         if policy_enabled:
                             hopf_xy = hopf.step_velocity(float(state.command[0]), simulation_dt * control_decimation)
@@ -485,6 +597,16 @@ def main() -> None:
                             state.action.fill(0.0)
                             state.target_q[:] = default_angles
 
+                    if data.time >= next_command_print_time:
+                        actual_lin_vel_b, actual_ang_vel_b = root_velocity_body(data)
+                        print(
+                            "velocity target/actual: "
+                            f"vx={state.command[0]: .3f}/{actual_lin_vel_b[0]: .3f} m/s, "
+                            f"vy={state.command[1]: .3f}/{actual_lin_vel_b[1]: .3f} m/s, "
+                            f"yaw={state.command[2]: .3f}/{actual_ang_vel_b[2]: .3f} rad/s"
+                        )
+                        next_command_print_time += COMMAND_PRINT_INTERVAL_S
+
                 pre_sync_time = data.time
                 viewer.sync()
                 if data.time + simulation_dt < pre_sync_time:
@@ -494,6 +616,7 @@ def main() -> None:
                         binding,
                         state,
                         hopf,
+                        command_controller,
                         default_angles,
                         root_height,
                         config,
@@ -506,6 +629,7 @@ def main() -> None:
                     sim_start_time = data.time
                     next_frame_time = wall_start_time
                     last_data_time = data.time
+                    next_command_print_time = data.time
                     viewer.sync()
                     continue
 

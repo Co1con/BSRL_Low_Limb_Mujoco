@@ -7,7 +7,7 @@ obs_groups: {}
 clip_actions: null
 save_interval: 100
 experiment_name: ''
-run_name: hopf_100_2_150_4_DelayedPowerLimitiedPDActor_v1
+run_name: hopf_plane_mirror_v2
 logger: tensorboard
 neptune_project: isaaclab
 wandb_project: isaaclab
@@ -47,4 +47,8 @@ algorithm:
   clip_param: 0.2
   normalize_advantage_per_mini_batch: false
   rnd_cfg: null
-  symmetry_cfg: null
+  symmetry_cfg:
+    use_data_augmentation: true
+    use_mirror_loss: false
+    data_augmentation_func: BSRL_Low_Limb_PPO.tasks.manager_based.bsrl_low_limb_ppo.mdp.symmetry:compute_symmetric_states
+    mirror_loss_coeff: 0.0

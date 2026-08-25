@@ -34,10 +34,28 @@ num_actions: 12
 num_obs: 59
 
 cmd_init: [0.0, 0.0, 0.0]
-walk_key: "V"
 reset_key: "R"
 walk_vx: 0.5
 policy_enabled: true
+
+command_control:
+  debounce_s: 0.2
+  lin_vel_x_levels: [0.0, 0.3, 0.5, 0.8, 1.0, 1.2, 1.5]
+  yaw_rate_step: 0.1
+  yaw_rate_limit: 0.5
+  increase_vx_key: "UP"
+  decrease_vx_key: "DOWN"
+  yaw_left_key: "LEFT"
+  yaw_right_key: "RIGHT"
+  stop_key: "U"
+
+viewer:
+  follow_camera:
+    enabled: true
+    body: "base_link"
+    distance: 3.0
+    azimuth: 140.0
+    elevation: -20.0
 
 hopf:
   velocity_freq_slope: 0.45
