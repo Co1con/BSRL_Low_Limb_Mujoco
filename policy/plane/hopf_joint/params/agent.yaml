@@ -1,19 +1,19 @@
 seed: 42
 device: cuda:0
 num_steps_per_env: 24
-max_iterations: 5000
+max_iterations: 10000
 empirical_normalization: false
 obs_groups: {}
 clip_actions: null
 save_interval: 100
 experiment_name: ''
-run_name: hopf
+run_name: hopf_100_2_150_4_DelayedPowerLimitiedPDActor_v1
 logger: tensorboard
 neptune_project: isaaclab
 wandb_project: isaaclab
-resume: true
-load_run: 2026-08-22_12-52-51_hopf
-load_checkpoint: model_4999.pt
+resume: false
+load_run: .*
+load_checkpoint: model_.*.pt
 class_name: OnPolicyRunner
 policy:
   class_name: ActorCritic

@@ -5,18 +5,23 @@ simulation_duration: 0.0
 simulation_dt: 0.001
 control_decimation: 20
 startup_pause_s: 1.0
+root_height: 0.8665
 
-kps: [100.0, 100.0, 100.0, 150.0, 40.0, 40.0,
-      100.0, 100.0, 100.0, 150.0, 40.0, 40.0]
+kps: [100.0, 100.0, 100.0, 100.0, 100.0, 100.0,
+      150.0, 150.0, 40.0, 40.0, 40.0, 40.0]
 
-kds: [2.0, 2.0, 2.0, 4.0, 2.0, 2.0,
-      2.0, 2.0, 2.0, 4.0, 2.0, 2.0]
+kds: [2.0, 2.0, 2.0, 2.0, 2.0, 2.0,
+      4.0, 4.0, 2.0, 2.0, 2.0, 2.0]
 
-default_angles: [0.0, 0.0, -0.2, 0.4, -0.2, 0.0,
-                 0.0, 0.0, -0.2, 0.4, -0.2, 0.0]
+default_angles: [0.0, 0.0, 0.0, 0.0, -0.2, -0.2,
+                 0.4, 0.4, -0.2, -0.2, 0.0, 0.0]
 
-peak_powers: [1250.0, 1050.0, 1050.0, 1050.0, 1250.0, 1250.0,
-              1250.0, 1050.0, 1050.0, 1050.0, 1250.0, 1250.0]
+peak_powers: [1250.0, 1250.0, 1050.0, 1050.0, 1050.0, 1050.0,
+              1050.0, 1050.0, 1250.0, 1250.0, 1250.0, 1250.0]
+
+velocity_limits: [26.179938779914945, 26.179938779914945, 15.131267151039597, 15.131267151039597,
+                  15.131267151039597, 15.131267151039597, 15.131267151039597, 15.131267151039597,
+                  26.179938779914945, 26.179938779914945, 26.179938779914945, 26.179938779914945]
 
 ang_vel_scale: 0.2
 dof_pos_scale: 1.0
@@ -30,12 +35,15 @@ num_obs: 59
 
 cmd_init: [0.0, 0.0, 0.0]
 walk_key: "V"
-walk_vx: 0.8
+walk_vx: 0.5
 policy_enabled: true
 
 hopf:
-  velocity_freq_slope: 0.45
-  velocity_freq_intercept: 0.60
+  velocity_freq_quadratic: -0.3407
+  velocity_freq_linear: 1.1721
+  velocity_freq_intercept: 0.1003
+  velocity_freq_min: 0.0
+  velocity_freq_max: 1.5
   mu: 1.0
   gamma: 20.0
   stop_eps: 1.0e-6
@@ -43,7 +51,21 @@ hopf:
   return_freq_min: 0.0
   return_freq_max: 5.0
 
-joint_names:
+policy_joint_names:
+  - joint_left_hip_yaw
+  - joint_right_hip_yaw
+  - joint_left_hip_roll
+  - joint_right_hip_roll
+  - joint_left_hip_pitch
+  - joint_right_hip_pitch
+  - joint_left_knee_pitch
+  - joint_right_knee_pitch
+  - joint_left_ankle_pitch
+  - joint_right_ankle_pitch
+  - joint_left_ankle_roll
+  - joint_right_ankle_roll
+
+mujoco_joint_names:
   - joint_right_hip_yaw
   - joint_right_hip_roll
   - joint_right_hip_pitch
