@@ -108,8 +108,7 @@ class MasterHopf:
         self.gamma = float(config["gamma"])
         self.stop_eps = float(config["stop_eps"])
         self.phase_eps = float(config["phase_eps"])
-        self.velocity_freq_quadratic = float(config.get("velocity_freq_quadratic", 0.0))
-        self.velocity_freq_linear = float(config.get("velocity_freq_linear", config.get("velocity_freq_slope", 0.0)))
+        self.velocity_freq_slope = float(config["velocity_freq_slope"])
         self.velocity_freq_intercept = float(config["velocity_freq_intercept"])
         self.velocity_freq_min = float(config.get("velocity_freq_min", 0.0))
         self.velocity_freq_max = float(config.get("velocity_freq_max", float("inf")))
@@ -141,7 +140,8 @@ class MasterHopf:
             return 0.0
 
         abs_vx = abs(float(vx))
-        freq = self.velocity_freq_quadratic * abs_vx * abs_vx + self.velocity_freq_linear * abs_vx + self.velocity_freq_intercept
+        # 与 PPO/IsaacLab 训练侧保持一致：步频只由前向速度绝对值线性映射得到。
+        freq = self.velocity_freq_slope * abs_vx + self.velocity_freq_intercept
         return min(max(freq, self.velocity_freq_min), self.velocity_freq_max)
 
     def step_velocity(self, vx: float, dt: float) -> np.ndarray:

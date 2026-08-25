@@ -39,11 +39,10 @@ walk_vx: 0.5
 policy_enabled: true
 
 hopf:
-  velocity_freq_quadratic: -0.3407
-  velocity_freq_linear: 1.1721
-  velocity_freq_intercept: 0.1003
+  velocity_freq_slope: 0.45
+  velocity_freq_intercept: 0.60
   velocity_freq_min: 0.0
-  velocity_freq_max: 1.5
+  velocity_freq_max: 2.0
   mu: 1.0
   gamma: 20.0
   stop_eps: 1.0e-6
