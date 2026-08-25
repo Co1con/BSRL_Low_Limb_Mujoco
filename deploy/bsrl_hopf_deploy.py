@@ -374,7 +374,7 @@ def main() -> None:
         counter = 0
         wall_start_time = time.perf_counter()
         sim_start_time = data.time
-        next_render_time = wall_start_time
+        next_frame_time = wall_start_time
 
         with mujoco.viewer.launch_passive(model, data) as viewer:
             viewer.opt.geomgroup[3] = 0
@@ -383,36 +383,37 @@ def main() -> None:
                 time.sleep(startup_pause_s)
                 wall_start_time = time.perf_counter()
                 sim_start_time = data.time
-                next_render_time = wall_start_time
+                next_frame_time = wall_start_time
 
             while viewer.is_running() and (simulation_duration <= 0.0 or data.time - sim_start_time < simulation_duration):
-                wall_elapsed = time.perf_counter() - wall_start_time
-                sim_elapsed = data.time - sim_start_time
+                target_sim_time = sim_start_time + (time.perf_counter() - wall_start_time)
 
-                if sim_elapsed > wall_elapsed + simulation_dt:
-                    time.sleep(min(sim_elapsed - wall_elapsed, render_period))
-                    continue
+                # 每帧渲染前批量推进仿真，避免 Windows 1 ms sleep 精度不足造成慢动作。
+                while data.time < target_sim_time and (
+                    simulation_duration <= 0.0 or data.time - sim_start_time < simulation_duration
+                ):
+                    step_control(model, data, binding, state, kps, kds, peak_powers, velocity_limits)
+                    counter += 1
 
-                step_control(model, data, binding, state, kps, kds, peak_powers, velocity_limits)
-                counter += 1
+                    if counter % control_decimation == 0:
+                        update_command(state.command, config)
 
-                if counter % control_decimation == 0:
-                    update_command(state.command, config)
+                        if policy_enabled:
+                            hopf_xy = hopf.step_velocity(float(state.command[0]), simulation_dt * control_decimation)
+                            obs = build_observation(data, binding, state, default_angles, hopf_xy, config)
+                            state.action[:] = run_policy(session, input_name, output_name, obs)
+                            state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
+                        else:
+                            state.action.fill(0.0)
+                            state.target_q[:] = default_angles
 
-                    if policy_enabled:
-                        hopf_xy = hopf.step_velocity(float(state.command[0]), simulation_dt * control_decimation)
-                        obs = build_observation(data, binding, state, default_angles, hopf_xy, config)
-                        state.action[:] = run_policy(session, input_name, output_name, obs)
-                        state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
-                    else:
-                        state.action.fill(0.0)
-                        state.target_q[:] = default_angles
-
-                # 仿真按 data.time 对齐真实时间；GUI 无需 1000 Hz 刷新，低频同步即可。
-                now = time.perf_counter()
-                if now >= next_render_time:
-                    viewer.sync()
-                    next_render_time = now + render_period
+                viewer.sync()
+                next_frame_time += render_period
+                sleep_time = next_frame_time - time.perf_counter()
+                if sleep_time > 0.0:
+                    time.sleep(sleep_time)
+                else:
+                    next_frame_time = time.perf_counter()
     finally:
         staged_assets.cleanup()
 
