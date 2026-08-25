@@ -372,19 +372,26 @@ def main() -> None:
             state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
 
         counter = 0
-        start_time = time.perf_counter()
-        next_render_time = start_time
+        wall_start_time = time.perf_counter()
+        sim_start_time = data.time
+        next_render_time = wall_start_time
 
         with mujoco.viewer.launch_passive(model, data) as viewer:
             viewer.opt.geomgroup[3] = 0
             viewer.sync()
             if startup_pause_s > 0.0:
                 time.sleep(startup_pause_s)
-                start_time = time.perf_counter()
-                next_render_time = start_time
+                wall_start_time = time.perf_counter()
+                sim_start_time = data.time
+                next_render_time = wall_start_time
 
-            while viewer.is_running() and (simulation_duration <= 0.0 or time.perf_counter() - start_time < simulation_duration):
-                step_start = time.perf_counter()
+            while viewer.is_running() and (simulation_duration <= 0.0 or data.time - sim_start_time < simulation_duration):
+                wall_elapsed = time.perf_counter() - wall_start_time
+                sim_elapsed = data.time - sim_start_time
+
+                if sim_elapsed > wall_elapsed + simulation_dt:
+                    time.sleep(min(sim_elapsed - wall_elapsed, render_period))
+                    continue
 
                 step_control(model, data, binding, state, kps, kds, peak_powers, velocity_limits)
                 counter += 1
@@ -401,15 +408,11 @@ def main() -> None:
                         state.action.fill(0.0)
                         state.target_q[:] = default_angles
 
-                # 仿真步长是 1 ms，但 GUI 无需 1000 Hz 刷新；降到 60 Hz 可明显减少卡顿。
+                # 仿真按 data.time 对齐真实时间；GUI 无需 1000 Hz 刷新，低频同步即可。
                 now = time.perf_counter()
                 if now >= next_render_time:
                     viewer.sync()
                     next_render_time = now + render_period
-
-                sleep_time = simulation_dt - (time.perf_counter() - step_start)
-                if sleep_time > 0.0:
-                    time.sleep(sleep_time)
     finally:
         staged_assets.cleanup()
 
