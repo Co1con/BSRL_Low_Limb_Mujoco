@@ -35,6 +35,7 @@ num_obs: 59
 
 cmd_init: [0.0, 0.0, 0.0]
 walk_key: "V"
+reset_key: "R"
 walk_vx: 0.5
 policy_enabled: true
 

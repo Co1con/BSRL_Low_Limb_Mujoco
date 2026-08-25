@@ -287,6 +287,17 @@ def update_command(command: np.ndarray, config: dict) -> None:
         command[0] = float(config["walk_vx"])
 
 
+def get_config_key_pressed(config: dict, key_name: str) -> bool:
+    key = config.get(key_name)
+    if not key:
+        return False
+
+    try:
+        return get_key_pressed(str(key))
+    except AttributeError:
+        return False
+
+
 def create_runtime_state(config: dict, default_angles: np.ndarray, kds: np.ndarray) -> RuntimeState:
     num_actions = int(config["num_actions"])
     return RuntimeState(
@@ -317,6 +328,35 @@ def step_control(
     mujoco.mj_step(model, data)
 
 
+def reset_runtime(
+    model: mujoco.MjModel,
+    data: mujoco.MjData,
+    binding: JointBinding,
+    state: RuntimeState,
+    hopf: MasterHopf,
+    default_angles: np.ndarray,
+    root_height: float,
+    config: dict,
+    session: ort.InferenceSession | None,
+    input_name: str,
+    output_name: str,
+) -> None:
+    # reset 必须同时清物理状态和控制器内部状态，否则旧 action 会在下一控制步把姿态拉回去。
+    reset_to_default_pose(data, binding, default_angles, root_height)
+    hopf.reset()
+    state.action.fill(0.0)
+    state.target_q[:] = default_angles
+    state.target_dq.fill(0.0)
+    state.joint_effort.fill(0.0)
+    state.command[:] = np.asarray(config["cmd_init"], dtype=np.float32)
+    mujoco.mj_forward(model, data)
+
+    if session is not None:
+        obs = build_observation(data, binding, state, default_angles, hopf.xy, config)
+        state.action[:] = run_policy(session, input_name, output_name, obs)
+        state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Deploy the BSRL Hopf policy in MuJoCo.")
     parser.add_argument("config_file", nargs="?", type=Path, default=DEFAULT_CONFIG_PATH)
@@ -337,6 +377,7 @@ def main() -> None:
     control_decimation = int(config["control_decimation"])
     startup_pause_s = float(config.get("startup_pause_s", 0.0))
     render_period = 1.0 / max(args.render_fps, 1.0)
+    root_height = float(config.get("root_height", 0.8665))
 
     kps = np.asarray(config["kps"], dtype=np.float64)
     kds = np.asarray(config["kds"], dtype=np.float64)
@@ -359,22 +400,32 @@ def main() -> None:
         # 策略关节顺序和 MuJoCo 执行器顺序可能不同，所有读写都通过显式地址映射完成。
         require_model_layout(model, mujoco_joint_names, policy_joint_names)
         binding = bind_joints(model, policy_joint_names)
-        reset_to_default_pose(data, binding, default_angles, float(config.get("root_height", 0.8665)))
-        mujoco.mj_forward(model, data)
-
         session = None
         input_name = ""
         output_name = ""
         if policy_enabled:
             session, input_name, output_name = load_policy(policy_path)
-            first_obs = build_observation(data, binding, state, default_angles, hopf.xy, config)
-            state.action[:] = run_policy(session, input_name, output_name, first_obs)
-            state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
+
+        reset_runtime(
+            model,
+            data,
+            binding,
+            state,
+            hopf,
+            default_angles,
+            root_height,
+            config,
+            session,
+            input_name,
+            output_name,
+        )
 
         counter = 0
         wall_start_time = time.perf_counter()
         sim_start_time = data.time
         next_frame_time = wall_start_time
+        last_data_time = data.time
+        reset_key_was_pressed = False
 
         with mujoco.viewer.launch_passive(model, data) as viewer:
             viewer.opt.geomgroup[3] = 0
@@ -386,6 +437,33 @@ def main() -> None:
                 next_frame_time = wall_start_time
 
             while viewer.is_running() and (simulation_duration <= 0.0 or data.time - sim_start_time < simulation_duration):
+                reset_key_pressed = get_config_key_pressed(config, "reset_key")
+                viewer_reset_requested = data.time + simulation_dt < last_data_time
+                script_reset_requested = reset_key_pressed and not reset_key_was_pressed
+                reset_key_was_pressed = reset_key_pressed
+
+                if viewer_reset_requested or script_reset_requested:
+                    reset_runtime(
+                        model,
+                        data,
+                        binding,
+                        state,
+                        hopf,
+                        default_angles,
+                        root_height,
+                        config,
+                        session,
+                        input_name,
+                        output_name,
+                    )
+                    counter = 0
+                    wall_start_time = time.perf_counter()
+                    sim_start_time = data.time
+                    next_frame_time = wall_start_time
+                    last_data_time = data.time
+                    viewer.sync()
+                    continue
+
                 target_sim_time = sim_start_time + (time.perf_counter() - wall_start_time)
 
                 # 每帧渲染前批量推进仿真，避免 Windows 1 ms sleep 精度不足造成慢动作。
@@ -407,13 +485,37 @@ def main() -> None:
                             state.action.fill(0.0)
                             state.target_q[:] = default_angles
 
+                pre_sync_time = data.time
                 viewer.sync()
+                if data.time + simulation_dt < pre_sync_time:
+                    reset_runtime(
+                        model,
+                        data,
+                        binding,
+                        state,
+                        hopf,
+                        default_angles,
+                        root_height,
+                        config,
+                        session,
+                        input_name,
+                        output_name,
+                    )
+                    counter = 0
+                    wall_start_time = time.perf_counter()
+                    sim_start_time = data.time
+                    next_frame_time = wall_start_time
+                    last_data_time = data.time
+                    viewer.sync()
+                    continue
+
                 next_frame_time += render_period
                 sleep_time = next_frame_time - time.perf_counter()
                 if sleep_time > 0.0:
                     time.sleep(sleep_time)
                 else:
                     next_frame_time = time.perf_counter()
+                last_data_time = data.time
     finally:
         staged_assets.cleanup()
 
