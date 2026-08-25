@@ -15,7 +15,7 @@ from mujoco import viewer
 
 
 PROJECT_DIR = Path(__file__).resolve().parents[1]
-DEFAULT_XML = PROJECT_DIR / "bsrl" / "urdf" / "export_floating.xml"
+DEFAULT_XML = PROJECT_DIR / "assets" / "bsrl" / "urdf" / "export_floating.xml"
 DEFAULT_POLICY = PROJECT_DIR / "policy" / "plane" / "hopf_joint" / "exported" / "policy.onnx"
 
 JOINT_NAMES = [
@@ -33,8 +33,9 @@ JOINT_NAMES = [
     "joint_left_ankle_roll",
 ]
 
-KP = np.array([200.0, 200.0, 300.0, 450.0, 100.0, 100.0, 200.0, 200.0, 300.0, 450.0, 100.0, 100.0])
-KD = np.array([15.0, 15.0, 20.0, 25.0, 8.0, 8.0, 15.0, 15.0, 20.0, 25.0, 8.0, 8.0])
+KP = np.array([100.0, 100.0, 100.0, 150.0, 40.0, 40.0, 100.0, 100.0, 100.0, 150.0, 40.0, 40.0])
+KD = np.array([2.0, 2.0, 2.0, 4.0, 2.0, 2.0, 2.0, 2.0, 2.0, 4.0, 2.0, 2.0])
+PEAK_POWER = np.array([1250.0, 1050.0, 1050.0, 1050.0, 1250.0, 1250.0, 1250.0, 1050.0, 1050.0, 1050.0, 1250.0, 1250.0])
 ACTION_SCALE = 0.25
 KEYFRAME = "default_stand"
 DURATION = 0.0
@@ -219,6 +220,9 @@ def pd_step(
 ) -> np.ndarray:
     torque = kp * (target_q - data.qpos[qpos_addr]) - kd * data.qvel[qvel_addr]
     torque = np.clip(torque, model.actuator_ctrlrange[:, 0], model.actuator_ctrlrange[:, 1])
+    power_torque_limit = PEAK_POWER / np.maximum(np.abs(data.qvel[qvel_addr]), 1e-3)
+    torque_limit = np.minimum(np.maximum(np.abs(model.actuator_ctrlrange[:, 0]), np.abs(model.actuator_ctrlrange[:, 1])), power_torque_limit)
+    torque = np.clip(torque, -torque_limit, torque_limit)
     data.ctrl[:] = torque
     mujoco.mj_step(model, data)
     return torque
