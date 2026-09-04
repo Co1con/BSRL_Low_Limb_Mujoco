@@ -1,4 +1,4 @@
-policy_path: "{PROJECT_ROOT}/policy/plane/hopf_joint_v3/exported/policy.onnx"
+policy_path: "{PROJECT_ROOT}/policy/plane/hopf_joint_v4/exported/policy.onnx"
 xml_path: "{PROJECT_ROOT}/assets/bsrl/urdf/export_floating.xml"
 
 simulation_duration: 0.0
