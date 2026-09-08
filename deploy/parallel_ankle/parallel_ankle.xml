@@ -1,0 +1,94 @@
+<!-- Approximate reference geometry; lengths in metres, angles in degrees. -->
+<mujoco model="BSRL parallel ankle">
+  <!-- Right-handed neutral frame: +X toward the long toe (away from rods),
+       +Y left, +Z up. Pitch about +Y; roll about the pitch-carried +X.
+       Positive pitch lowers the toe. Positive roll raises the left side. -->
+  <compiler angle="degree" />
+  <option timestep=".001" integrator="implicitfast" iterations="100" tolerance="1e-10" />
+  <visual>
+    <global offwidth="1440" offheight="1080" />
+    <headlight ambient=".45 .45 .45" diffuse=".7 .7 .7" />
+  </visual>
+  <default>
+    <geom contype="0" conaffinity="0" density="1200" />
+    <joint limited="auto" />
+    <site size=".003" rgba="0 0 0 0" />
+  </default>
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1=".75 .81 .89" rgb2=".94 .96 .99" width="512" height="3072" />
+    <texture name="grid" type="2d" builtin="checker" width="256" height="256" rgb1=".88 .90 .93" rgb2=".80 .83 .87" />
+    <material name="floor" texture="grid" texrepeat="8 8" texuniform="true" />
+  </asset>
+  <worldbody>
+    <light pos="1 -2 3" dir="-1 2 -3" />
+    <geom type="plane" size="2 2 .01" material="floor" />
+    <body name="fixed_shank" pos="0 0 0.05">
+      <!-- Frame display offset to the side for visibility; parallel to shank axes.
+           Sites have no mass and do not change the mechanism dynamics. -->
+      <site name="frame_origin" pos=".04 -.20 .105" size=".004" rgba="1 1 1 1" />
+      <site name="X_forward_red" type="capsule" fromto=".04 -.20 .105 .13 -.20 .105" size=".004" rgba="1 .1 .1 1" />
+      <site name="Y_left_green" type="capsule" fromto=".04 -.20 .105 .04 -.11 .105" size=".004" rgba=".1 .8 .1 1" />
+      <site name="Z_up_blue" type="capsule" fromto=".04 -.20 .105 .04 -.20 .195" size=".004" rgba=".1 .3 1 1" />
+      <!-- Fixed shank ends above O; two cheeks support the pitch shaft. -->
+      <geom name="shank_column" type="box" pos=".018 0 .335" size=".013 .026 .175" rgba=".48 .53 .60 1" />
+      <geom name="shank_yoke_bridge" type="box" pos=".008 0 .155" size=".024 .047 .008" rgba=".40 .45 .52 1" />
+      <geom name="shank_yoke_left" type="box" pos="0 -.039 .130" size=".018 .008 .025" rgba=".40 .45 .52 1" />
+      <geom name="shank_yoke_right" type="box" pos="0 .039 .130" size=".018 .008 .025" rgba=".40 .45 .52 1" />
+      <geom type="cylinder" pos=" .01 -0.02784 0.425" euler="90 0 0" size=".041 .022" rgba=".22 .25 .30 1" />
+      <body name="crank_1" pos=".01 -0.058 0.425">
+        <joint name="motor_1" axis="0 1 0" range="-70 70" damping=".12" armature=".002" />
+        <geom type="capsule" fromto="0 0 0 -.09 0 0" size=".009" rgba=".15 .55 .95 1" mass=".09" />
+        <geom type="sphere" size=".013" rgba=".15 .55 .95 1" />
+        <body name="rod_1" pos="-.09 0 0">
+          <joint name="rod_ball_1" type="ball" damping=".0003" />
+          <geom type="sphere" size=".012" rgba=".15 .55 .95 1" mass=".015" />
+          <geom type="capsule" fromto="0 0 0 0 0 -0.355" size=".0045" rgba=".15 .55 .95 1" mass=".08" />
+          <geom type="sphere" pos="0 0 -0.355" size=".011" rgba=".15 .55 .95 1" mass=".015" />
+          <site name="rod_end_1" pos="0 0 -0.355" />
+        </body>
+      </body>
+      <geom type="cylinder" pos=".01 0.02784 0.295" euler="90 0 0" size=".041 .022" rgba=".22 .25 .30 1" />
+      <body name="crank_2" pos=".01 0.058 0.295">
+        <joint name="motor_2" axis="0 1 0" range="-70 70" damping=".12" armature=".002" />
+        <geom type="capsule" fromto="0 0 0 -.09 0 0" size=".009" rgba=".98 .48 .12 1" mass=".09" />
+        <geom type="sphere" size=".013" rgba=".98 .48 .12 1" />
+        <body name="rod_2" pos="-.09 0 0">
+          <joint name="rod_ball_2" type="ball" damping=".0003" />
+          <geom type="sphere" size=".012" rgba=".98 .48 .12 1" mass=".015" />
+          <geom type="capsule" fromto="0 0 0 0 0 -0.225" size=".0045" rgba=".98 .48 .12 1" mass=".08" />
+          <geom type="sphere" pos="0 0 -0.225" size=".011" rgba=".98 .48 .12 1" mass=".015" />
+          <site name="rod_end_2" pos="0 0 -0.225" />
+        </body>
+      </body>
+      <body name="pitch_carrier" pos="0 0 .105">
+        <joint name="ankle_pitch" axis="0 1 0" range="-35 35" damping=".03" />
+        <!-- Orthogonal axes intersect at O. This shaft belongs to the pitch carrier. -->
+        <geom name="pitch_shaft" type="capsule" fromto="0 -.048 0 0 .048 0" size=".007" rgba=".70 .73 .78 1" mass=".05" />
+        <geom name="cross_block" type="box" size=".012 .012 .012" rgba=".70 .73 .78 1" mass=".04" />
+        <body name="foot">
+          <joint name="ankle_roll" axis="1 0 0" range="-31 31" damping=".03" />
+          <geom name="roll_shaft" type="capsule" fromto="-.033 0 0 .033 0 0" size=".006" rgba=".92 .76 .20 1" mass=".02" />
+          <geom type="box" pos=".035 0 -.057" size=".125 .065 .012" rgba=".28 .33 .40 1" mass=".65" />
+          <geom type="box" pos=".035 0 -.071" size=".125 .065 .003" rgba=".12 .15 .19 1" mass=".05" />
+          <!-- Foot-side fork supports the roll shaft without filling the joint centre. -->
+          <geom name="foot_yoke_back" type="box" pos="-.026 0 -.023" size=".006 .016 .023" rgba=".6 .65 .7 1" mass=".03" />
+          <geom name="foot_yoke_front" type="box" pos=".026 0 -.023" size=".006 .016 .023" rgba=".6 .65 .7 1" mass=".03" />
+          <!-- D1/D2 are foot-fixed spherical attachment centres, not extra hinges.
+               Both points lie 35 mm below O (approximate); rod lengths are 355 / 225 mm. -->
+          <geom name="foot_lug_1" type="capsule" fromto="-.08 -.058 -.045 -.08 -.058 -.035" size=".008" rgba=".55 .61 .68 1" mass=".04" />
+          <geom name="foot_lug_2" type="capsule" fromto="-.08 .058 -.045 -.08 .058 -.035" size=".008" rgba=".55 .61 .68 1" mass=".04" />
+          <site name="foot_end_1" pos="-.08 -.058 -.035" />
+          <site name="foot_end_2" pos="-.08 .058 -.035" />
+        </body>
+      </body>
+    </body>
+  </worldbody>
+  <equality>
+    <connect site1="rod_end_1" site2="foot_end_1" solref=".004 1" solimp=".99 .999 .001" />
+    <connect site1="rod_end_2" site2="foot_end_2" solref=".004 1" solimp=".99 .999 .001" />
+  </equality>
+  <actuator>
+    <motor name="drive_1" joint="motor_1" gear="1" ctrllimited="true" ctrlrange="-20 20" forcerange="-20 20" />
+    <motor name="drive_2" joint="motor_2" gear="1" ctrllimited="true" ctrlrange="-20 20" forcerange="-20 20" />
+  </actuator>
+</mujoco>
