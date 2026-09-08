@@ -29,7 +29,7 @@ python deploy/parallel_ankle/parallel_ankle_demo.py --no-view
 7. Pitch -34°、Roll +30°；
 8. Pitch -34°、Roll -30°。
 
-运行完成后打印误差指标、显示波形，并将波形导出到
+运行完成后以弧度（rad）打印角度误差指标、显示波形，并将波形导出到
 `logs/parallel_ankle/pr_control_evaluation.png` 或
 `logs/parallel_ankle/ab_control_evaluation.png`。
 
@@ -54,6 +54,23 @@ python deploy/parallel_ankle/parallel_ankle_demo.py --no-view
 - `alpha_i`：电机角度；
 - `d_i`：`D_i` 在足底坐标系中的固定坐标。
 
+当前 XML 按实物参数图采用以下尺寸（单位为 mm）：
+
+| 参数图尺寸 | 数值 | XML 对应量 |
+|---|---:|---|
+| `A1B1 = A2B2` | 68 | 两个电机摇臂长度 |
+| `OA1` | 245 | 上方电机中心相对踝中心的 Z 距离 |
+| `OA2` | 165 | 下方电机中心相对踝中心的 Z 距离 |
+| `B1C1` | 245.2 | 支链 1 长连杆长度 |
+| `B2C2` | 165.3 | 支链 2 长连杆长度 |
+| `C1C2` | 44 | 足底两个球铰连接点的 Y 向间距 |
+
+以踝中心 `O=(0,0,0.105)m` 为基准，XML 中两个电机中心分别为
+`A1=O+(0,+0.022,0.245)m` 和 `A2=O+(0,-0.022,0.165)m`。足底
+球铰点采用 `C1=(-0.058,+0.022,0)m`、`C2=(-0.058,-0.022,0)m`。
+这个 X 偏置使中立位时两根长连杆长度分别约为 245.2 mm 和
+165.3 mm，同时不改变坐标轴或关节旋转轴定义。
+
 足底相对小腿的旋转矩阵为：
 
 ```math
@@ -72,14 +89,15 @@ R(p,r)=R_y(p)R_x(r)
 D_i(p,r)=O+R(p,r)d_i.
 ```
 
-摇臂中立位置指向 -X，电机绕 Y 轴旋转，因此摇臂末端位置为：
+水平足底对应两根摇臂相对 -X 向下倾斜 10°。电机正方向绕 -Y 轴旋转，
+因此摇臂末端位置为：
 
 ```math
 C_i(\alpha_i)=B_i+
 \begin{bmatrix}
 -a_i\cos\alpha_i\\
 0\\
-a_i\sin\alpha_i
+-a_i\sin\alpha_i
 \end{bmatrix}.
 ```
 
@@ -184,13 +202,13 @@ J_F=
 ```math
 \boldsymbol v_i^T\boldsymbol v_i+a_i^2
 +2a_iv_{ix}\cos\alpha_i
--2a_iv_{iz}\sin\alpha_i=L_i^2.
++2a_iv_{iz}\sin\alpha_i=L_i^2.
 ```
 
 定义：
 
 ```math
-A_i=-v_{ix},\qquad B'_i=v_{iz},
+A_i=-v_{ix},\qquad B'_i=-v_{iz},
 ```
 
 ```math
@@ -380,3 +398,4 @@ MuJoCo 电机执行器
 - 最大雅可比条件数。
 
 波形图包含目标、正解反馈、MuJoCo 结果、跟踪误差、电机角度和电机力矩。
+所有角度与角度误差曲线均直接使用弧度（rad），不转换为角度（deg）。

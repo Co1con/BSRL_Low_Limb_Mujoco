@@ -53,7 +53,7 @@ class ForwardKinematics:
 
     def solve(self, motors):
         motors = np.asarray(motors)
-        crank_ends = self.pivots + np.column_stack((-self.radii * np.cos(motors), np.zeros(2), self.radii * np.sin(motors)))
+        crank_ends = self.pivots + np.column_stack((-self.radii * np.cos(motors), np.zeros(2), -self.radii * np.sin(motors)))
         
         def residual(q):
             ends = self.mounts @ self.rotation(q).T + self.origin
@@ -98,7 +98,7 @@ class InverseKinematics:
         result = []
         for i in range(2):
             v = rotation @ self.mounts[i] + self.origin - self.pivots[i]
-            a, b, radius = -v[0], v[2], self.radii[i]
+            a, b, radius = -v[0], -v[2], self.radii[i]
             ratio = (v @ v + radius ** 2 - self.lengths[i] ** 2) / (2 * radius * np.hypot(a, b))
             if abs(ratio) > 1 + 1e-10:
                 raise ValueError("Unreachable ankle target")
@@ -128,29 +128,29 @@ class Evaluation:
 
     def show(self):
         v = np.asarray(self.rows)
-        tracking = np.rad2deg(v[:, 1:3] - v[:, 3:5])
-        fk_error = np.rad2deg(v[:, 3:5] - v[:, 5:7])
+        tracking = v[:, 1:3] - v[:, 3:5]
+        fk_error = v[:, 3:5] - v[:, 5:7]
         print(f"\n{self.mode} evaluation")
-        print("  ankle tracking RMSE [pitch, roll] deg:", np.sqrt(np.mean(tracking ** 2, axis=0)))
-        print("  ankle tracking max abs [pitch, roll] deg:", np.max(np.abs(tracking), axis=0))
-        print("  FK vs MuJoCo max abs [pitch, roll] deg:", np.max(np.abs(fk_error), axis=0))
+        print("  ankle tracking RMSE [pitch, roll] rad:", np.sqrt(np.mean(tracking ** 2, axis=0)))
+        print("  ankle tracking max abs [pitch, roll] rad:", np.max(np.abs(tracking), axis=0))
+        print("  FK vs MuJoCo max abs [pitch, roll] rad:", np.max(np.abs(fk_error), axis=0))
         print("  peak motor torque [M1, M2] Nm:", np.max(np.abs(v[:, 11:13]), axis=0))
         print("  max FK residual m:", np.max(v[:, 13]))
         print("  max Jacobian condition:", np.max(v[:, 14]))
         figure, axes = plt.subplots(3, 2, figsize=(13, 9), sharex=True)
         for i, name in enumerate(("Pitch", "Roll")):
-            axes[0, i].plot(v[:, 0], np.rad2deg(v[:, 1 + i]), label="Target")
-            axes[0, i].plot(v[:, 0], np.rad2deg(v[:, 3 + i]), "--", label="FK feedback")
-            axes[0, i].plot(v[:, 0], np.rad2deg(v[:, 5 + i]), ":", label="MuJoCo")
-            axes[0, i].set_ylabel(f"{name} (deg)")
+            axes[0, i].plot(v[:, 0], v[:, 1 + i], label="Target")
+            axes[0, i].plot(v[:, 0], v[:, 3 + i], "--", label="FK feedback")
+            axes[0, i].plot(v[:, 0], v[:, 5 + i], ":", label="MuJoCo")
+            axes[0, i].set_ylabel(f"{name} (rad)")
             # axes[1, i].plot(v[:, 0], tracking[:, i], label="Target - FK")
             axes[1, i].plot(v[:, 0], fk_error[:, i], label="FK - MuJoCo")
-            axes[1, i].set_ylabel("Error (deg)")
-            axes[2, i].plot(v[:, 0], np.rad2deg(v[:, 7 + i]), label="Target")
-            axes[2, i].plot(v[:, 0], np.rad2deg(v[:, 9 + i]), "--", label="Actual")
+            axes[1, i].set_ylabel("Error (rad)")
+            axes[2, i].plot(v[:, 0], v[:, 7 + i], label="Target")
+            axes[2, i].plot(v[:, 0], v[:, 9 + i], "--", label="Actual")
             torque_axis = axes[2, i].twinx()
             torque_axis.plot(v[:, 0], v[:, 11 + i], "r", alpha=.45, label="Torque")
-            axes[2, i].set_ylabel(f"Motor {i + 1} (deg)")
+            axes[2, i].set_ylabel(f"Motor {i + 1} (rad)")
             torque_axis.set_ylabel("Torque (Nm)")
             for row in range(3):
                 axes[row, i].grid(alpha=.3)
@@ -229,8 +229,8 @@ def run(mode, no_view):
                         result = step()
                     mujoco.mj_forward(model, data)
                 if data.time >= next_print:
-                    print(f"{mode} t={data.time:5.2f}s {result[0]} | target/FK deg: "
-                          f"{np.rad2deg(result[1])} / {np.rad2deg(result[2])}", flush=True)
+                    print(f"{mode} t={data.time:5.2f}s {result[0]} | target/FK rad: "
+                          f"{result[1]} / {result[2]}", flush=True)
                     next_print = data.time+.5
                 viewer.sync()
                 time.sleep(max(0, 1/60-(time.perf_counter()-frame_start)))
