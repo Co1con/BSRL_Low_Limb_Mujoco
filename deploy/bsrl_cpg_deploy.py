@@ -1,6 +1,5 @@
 import argparse
 import ctypes
-import math
 import shutil
 import tempfile
 import time
@@ -13,9 +12,11 @@ import numpy as np
 import onnxruntime as ort
 import yaml
 
+from LowLimbCPG import LowLimbCPG
+
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_CONFIG_PATH = PROJECT_ROOT / "deploy" / "bsrl_hopf_deploy.yaml"
+DEFAULT_CONFIG_PATH = PROJECT_ROOT / "deploy" / "bsrl_cpg_deploy.yaml"
 DEFAULT_RENDER_FPS = 60.0
 COMMAND_PRINT_INTERVAL_S = 0.1
 KEY_CODES = {
@@ -37,11 +38,17 @@ def resolve_path(path: str) -> str:
 def stage_assets_to_ascii_path(xml_path: str) -> tuple[tempfile.TemporaryDirectory, str]:
     """Copy MuJoCo assets to an ASCII temp path for Windows loaders."""
     source_xml_path = Path(xml_path).resolve()
+    if not source_xml_path.is_file():
+        raise FileNotFoundError(f"MuJoCo XML not found: {source_xml_path}")
     assets_dir = source_xml_path.parents[2]
     relative_xml_path = source_xml_path.relative_to(assets_dir)
     staged_root = tempfile.TemporaryDirectory(prefix="bsrl_mujoco_")
     staged_assets_dir = Path(staged_root.name) / assets_dir.name
-    shutil.copytree(assets_dir, staged_assets_dir)
+    try:
+        shutil.copytree(assets_dir, staged_assets_dir)
+    except Exception:
+        staged_root.cleanup()
+        raise
     return staged_root, str(staged_assets_dir / relative_xml_path)
 
 
@@ -142,77 +149,6 @@ def clip_by_motor_limits(
     return tau
 
 
-class MasterHopf:
-    def __init__(self, config: dict) -> None:
-        self.mu = float(config["mu"])
-        self.gamma = float(config["gamma"])
-        self.stop_eps = float(config["stop_eps"])
-        self.phase_eps = float(config["phase_eps"])
-        self.velocity_freq_slope = float(config["velocity_freq_slope"])
-        self.velocity_freq_intercept = float(config["velocity_freq_intercept"])
-        self.velocity_freq_min = float(config.get("velocity_freq_min", 0.0))
-        self.velocity_freq_max = float(config.get("velocity_freq_max", float("inf")))
-        self.return_omega_min = 2.0 * math.pi * float(config["return_freq_min"])
-        self.return_omega_max = 2.0 * math.pi * float(config["return_freq_max"])
-        self.x = 0.0
-        self.y = 0.0
-        self.omega = 0.0
-        self.last_omega = self.return_omega_max
-        self.reset()
-
-    @property
-    def phase(self) -> float:
-        return math.atan2(self.y, self.x) % (2.0 * math.pi)
-
-    @property
-    def xy(self) -> np.ndarray:
-        return np.array([self.x, self.y], dtype=np.float32)
-
-    def reset(self, phase: float = 0.0) -> None:
-        radius = math.sqrt(self.mu)
-        self.x = radius * math.cos(phase)
-        self.y = radius * math.sin(phase)
-        self.omega = 0.0
-        self.last_omega = self.return_omega_max
-
-    def velocity_to_frequency(self, vx: float) -> float:
-        if abs(vx) < self.stop_eps:
-            return 0.0
-
-        abs_vx = abs(float(vx))
-        # 与 PPO/IsaacLab 训练侧保持一致：步频只由前向速度绝对值线性映射得到。
-        freq = self.velocity_freq_slope * abs_vx + self.velocity_freq_intercept
-        return min(max(freq, self.velocity_freq_min), self.velocity_freq_max)
-
-    def step_velocity(self, vx: float, dt: float) -> np.ndarray:
-        return self.step(2.0 * math.pi * self.velocity_to_frequency(vx), dt)
-
-    def step(self, omega_cmd: float, dt: float) -> np.ndarray:
-        phase = self.phase
-        walking = abs(omega_cmd) > self.stop_eps
-        near_start = phase <= self.phase_eps or phase >= 2.0 * math.pi - self.phase_eps
-
-        if walking:
-            self.omega = omega_cmd
-            self.last_omega = abs(omega_cmd)
-        elif near_start:
-            self.reset()
-            return self.xy
-        else:
-            self.omega = min(max(self.last_omega, self.return_omega_min), self.return_omega_max)
-
-        r2 = self.x * self.x + self.y * self.y
-        self.x += (self.gamma * (self.mu - r2) * self.x - self.omega * self.y) * dt
-        self.y += (self.gamma * (self.mu - r2) * self.y + self.omega * self.x) * dt
-
-        if not walking:
-            phase = self.phase
-            if phase <= self.phase_eps or phase >= 2.0 * math.pi - self.phase_eps:
-                self.reset()
-
-        return self.xy
-
-
 @dataclass(frozen=True)
 class JointBinding:
     qpos_addr: np.ndarray
@@ -228,6 +164,108 @@ class RuntimeState:
     target_dq: np.ndarray
     joint_effort: np.ndarray
     command: np.ndarray
+
+
+CPG_JOINT_NAMES = (
+    "joint_left_hip_pitch",
+    "joint_left_knee_pitch",
+    "joint_right_hip_pitch",
+    "joint_right_knee_pitch",
+)
+
+
+def cpg_reference_in_policy_order(cpg: LowLimbCPG) -> np.ndarray:
+    """与训练侧 observations._cpg_angles_to_robot_order 保持同一关节极性。"""
+    angles = cpg.angles
+    return np.array(
+        [-angles["left_hip"], angles["left_knee"],
+         -angles["right_hip"], angles["right_knee"]],
+        dtype=np.float64,
+    )
+
+
+@dataclass
+class JointAngleTrace:
+    """暂存控制采样时刻的四关节实际角、CPG 参考角和策略目标角。"""
+
+    time: list[float]
+    actual: list[np.ndarray]
+    reference: list[np.ndarray]
+    policy_target: list[np.ndarray]
+    command: list[np.ndarray]
+    body_velocity: list[np.ndarray]
+    yaw_rate: list[float]
+    trunk_height: list[float]
+
+    @classmethod
+    def empty(cls) -> "JointAngleTrace":
+        return cls([], [], [], [], [], [], [], [])
+
+    def append(self, sample_time: float, actual: np.ndarray,
+               reference: np.ndarray, policy_target: np.ndarray,
+               command: np.ndarray, body_velocity: np.ndarray,
+               yaw_rate: float, trunk_height: float) -> None:
+        self.time.append(sample_time)
+        self.actual.append(actual.copy())
+        self.reference.append(reference.copy())
+        self.policy_target.append(policy_target.copy())
+        self.command.append(command.copy())
+        self.body_velocity.append(body_velocity.copy())
+        self.yaw_rate.append(yaw_rate)
+        self.trunk_height.append(trunk_height)
+
+
+def plot_joint_angles(trace: JointAngleTrace, target_height: float) -> None:
+    if not trace.time:
+        print("No joint-angle samples to plot.")
+        return
+
+    import matplotlib.pyplot as plt
+
+    sample_time = np.asarray(trace.time)
+    actual = np.stack(trace.actual)
+    reference = np.stack(trace.reference)
+    policy_target = np.stack(trace.policy_target)
+    figure, axes = plt.subplots(4, 1, sharex=True, figsize=(14, 10))
+    for joint_index, (axis, name) in enumerate(zip(axes, CPG_JOINT_NAMES)):
+        axis.plot(sample_time, actual[:, joint_index], label="Actual")
+        axis.plot(sample_time, reference[:, joint_index], label="CPG reference")
+        axis.plot(sample_time, policy_target[:, joint_index], label="Policy target", alpha=0.7)
+        axis.set_ylabel(f"{name}\n[rad]")
+        axis.grid(alpha=0.25)
+        axis.legend(loc="upper right")
+    axes[-1].set_xlabel("Simulation time [s]")
+    figure.tight_layout()
+
+    command = np.stack(trace.command)
+    body_velocity = np.stack(trace.body_velocity)
+    motion_figure, motion_axes = plt.subplots(2, 2, sharex=True, figsize=(14, 8))
+    motion_axes[0, 0].plot(sample_time, command[:, 0], label="Target")
+    motion_axes[0, 0].plot(sample_time, body_velocity[:, 0], label="Actual")
+    motion_axes[0, 0].set_title("Body-frame forward velocity")
+    motion_axes[0, 0].set_ylabel("m/s")
+
+    motion_axes[0, 1].plot(sample_time, command[:, 1], label="Target")
+    motion_axes[0, 1].plot(sample_time, body_velocity[:, 1], label="Actual")
+    motion_axes[0, 1].set_title("Body-frame lateral velocity")
+    motion_axes[0, 1].set_ylabel("m/s")
+
+    motion_axes[1, 0].plot(sample_time, command[:, 2], label="Target")
+    motion_axes[1, 0].plot(sample_time, trace.yaw_rate, label="Actual")
+    motion_axes[1, 0].set_title("Body yaw rate")
+    motion_axes[1, 0].set_ylabel("rad/s")
+
+    motion_axes[1, 1].axhline(target_height, color="tab:blue", label="Initial height")
+    motion_axes[1, 1].plot(sample_time, trace.trunk_height, color="tab:orange", label="Actual")
+    motion_axes[1, 1].set_title("Trunk height above ground (base_link)")
+    motion_axes[1, 1].set_ylabel("m")
+
+    for axis in motion_axes.flat:
+        axis.set_xlabel("Simulation time [s]")
+        axis.grid(alpha=0.25)
+        axis.legend(loc="upper right")
+    motion_figure.tight_layout()
+    plt.show()
 
 
 class CommandController:
@@ -364,7 +402,7 @@ def build_observation(
     binding: JointBinding,
     state: RuntimeState,
     default_angles: np.ndarray,
-    hopf_xy: np.ndarray,
+    rhythm_xy: np.ndarray,
     config: dict,
 ) -> np.ndarray:
     quat = data.qpos[3:7]
@@ -376,7 +414,7 @@ def build_observation(
     dqj = data.qvel[binding.qvel_addr] * float(config["dof_vel_scale"])
     effort = state.joint_effort * float(config["joint_effort_scale"])
 
-    obs = np.concatenate([omega, gravity, cmd, qj, dqj, effort, state.action, hopf_xy]).astype(np.float32)
+    obs = np.concatenate([omega, gravity, cmd, qj, dqj, effort, state.action, rhythm_xy]).astype(np.float32)
     if obs.shape != (int(config["num_obs"]),):
         raise ValueError(f"Observation shape mismatch: expected {(int(config['num_obs']),)}, got {obs.shape}")
     return obs
@@ -387,8 +425,29 @@ def load_policy(policy_path: str) -> tuple[ort.InferenceSession, str, str]:
     return session, session.get_inputs()[0].name, session.get_outputs()[0].name
 
 
-def run_policy(session: ort.InferenceSession, input_name: str, output_name: str, obs: np.ndarray) -> np.ndarray:
-    return session.run([output_name], {input_name: obs.reshape(1, -1)})[0].reshape(-1).astype(np.float32)
+def validate_policy_shape(session: ort.InferenceSession, num_obs: int, num_actions: int) -> None:
+    """Check the exported policy against the observation and action configuration."""
+    inputs = session.get_inputs()
+    outputs = session.get_outputs()
+    if len(inputs) != 1 or len(outputs) != 1:
+        raise ValueError("Policy must have exactly one input and one output")
+    if inputs[0].shape != [1, num_obs] or outputs[0].shape != [1, num_actions]:
+        raise ValueError(
+            f"Policy shape mismatch: expected [1, {num_obs}] -> [1, {num_actions}], "
+            f"got {inputs[0].shape} -> {outputs[0].shape}"
+        )
+
+
+def run_policy(session: ort.InferenceSession, input_name: str, output_name: str, obs: np.ndarray,
+               clip_actions: float | None = None) -> np.ndarray:
+    if not np.isfinite(obs).all():
+        raise ValueError("Policy observation contains non-finite values")
+    action = session.run([output_name], {input_name: obs.reshape(1, -1)})[0].reshape(-1).astype(np.float32)
+    if not np.isfinite(action).all():
+        raise ValueError("Policy action contains non-finite values")
+    if clip_actions is not None:
+        action = np.clip(action, -clip_actions, clip_actions)
+    return action
 
 
 def get_config_key_pressed(config: dict, key_name: str) -> bool:
@@ -437,7 +496,7 @@ def reset_runtime(
     data: mujoco.MjData,
     binding: JointBinding,
     state: RuntimeState,
-    hopf: MasterHopf,
+    cpg: LowLimbCPG,
     command_controller: CommandController,
     default_angles: np.ndarray,
     root_height: float,
@@ -448,7 +507,7 @@ def reset_runtime(
 ) -> None:
     # reset 必须同时清物理状态和控制器内部状态，否则旧 action 会在下一控制步把姿态拉回去。
     reset_to_default_pose(data, binding, default_angles, root_height)
-    hopf.reset()
+    cpg.reset()
     state.action.fill(0.0)
     state.target_q[:] = default_angles
     state.target_dq.fill(0.0)
@@ -457,13 +516,14 @@ def reset_runtime(
     mujoco.mj_forward(model, data)
 
     if session is not None:
-        obs = build_observation(data, binding, state, default_angles, hopf.xy, config)
-        state.action[:] = run_policy(session, input_name, output_name, obs)
+        rhythm_xy = np.array([cpg.rhythm.x, cpg.rhythm.y], dtype=np.float32)
+        obs = build_observation(data, binding, state, default_angles, rhythm_xy, config)
+        state.action[:] = run_policy(session, input_name, output_name, obs, config.get("clip_actions"))
         state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
 
 
 def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(description="Deploy the BSRL Hopf policy in MuJoCo.")
+    parser = argparse.ArgumentParser(description="Deploy the BSRL CPG policy in MuJoCo.")
     parser.add_argument("config_file", nargs="?", type=Path, default=DEFAULT_CONFIG_PATH)
     parser.add_argument("--stand-only", action="store_true", help="Keep zero action and only test default standing pose.")
     parser.add_argument("--render-fps", type=float, default=DEFAULT_RENDER_FPS, help="Viewer sync frequency.")
@@ -495,7 +555,8 @@ def main() -> None:
 
     state = create_runtime_state(config, default_angles, kds)
     command_controller = CommandController(config)
-    hopf = MasterHopf(config["hopf"])
+    cpg = LowLimbCPG()
+    trace = JointAngleTrace.empty()
     staged_assets, staged_xml_path = stage_assets_to_ascii_path(xml_path)
 
     try:
@@ -506,18 +567,25 @@ def main() -> None:
         # 策略关节顺序和 MuJoCo 执行器顺序可能不同，所有读写都通过显式地址映射完成。
         require_model_layout(model, mujoco_joint_names, policy_joint_names)
         binding = bind_joints(model, policy_joint_names)
+        if "joint_armature" in config:
+            model.dof_armature[binding.qvel_addr] = float(config["joint_armature"])
+        trunk_body_id = model_body_id(model, "base_link")
+        cpg_joint_ids = np.asarray(
+            [policy_joint_names.index(name) for name in CPG_JOINT_NAMES], dtype=np.int32
+        )
         session = None
         input_name = ""
         output_name = ""
         if policy_enabled:
             session, input_name, output_name = load_policy(policy_path)
+            validate_policy_shape(session, int(config["num_obs"]), int(config["num_actions"]))
 
         reset_runtime(
             model,
             data,
             binding,
             state,
-            hopf,
+            cpg,
             command_controller,
             default_angles,
             root_height,
@@ -558,7 +626,7 @@ def main() -> None:
                         data,
                         binding,
                         state,
-                        hopf,
+                        cpg,
                         command_controller,
                         default_angles,
                         root_height,
@@ -573,6 +641,7 @@ def main() -> None:
                     next_frame_time = wall_start_time
                     last_data_time = data.time
                     next_command_print_time = data.time
+                    trace = JointAngleTrace.empty()
                     viewer.sync()
                     continue
 
@@ -588,14 +657,28 @@ def main() -> None:
                     if counter % control_decimation == 0:
                         command_controller.update(state.command)
 
+                        cpg.step(float(state.command[0]), simulation_dt * control_decimation)
+                        rhythm_xy = np.array([cpg.rhythm.x, cpg.rhythm.y], dtype=np.float32)
+
                         if policy_enabled:
-                            hopf_xy = hopf.step_velocity(float(state.command[0]), simulation_dt * control_decimation)
-                            obs = build_observation(data, binding, state, default_angles, hopf_xy, config)
-                            state.action[:] = run_policy(session, input_name, output_name, obs)
+                            obs = build_observation(data, binding, state, default_angles, rhythm_xy, config)
+                            state.action[:] = run_policy(session, input_name, output_name, obs, config.get("clip_actions"))
                             state.target_q[:] = state.action * float(config["action_scale"]) + default_angles
                         else:
                             state.action.fill(0.0)
                             state.target_q[:] = default_angles
+
+                        actual_lin_vel_b, actual_ang_vel_b = root_velocity_body(data)
+                        trace.append(
+                            data.time - sim_start_time,
+                            data.qpos[binding.qpos_addr[cpg_joint_ids]],
+                            cpg_reference_in_policy_order(cpg),
+                            state.target_q[cpg_joint_ids],
+                            state.command,
+                            actual_lin_vel_b,
+                            float(actual_ang_vel_b[2]),
+                            float(data.xpos[trunk_body_id, 2]),
+                        )
 
                     if data.time >= next_command_print_time:
                         actual_lin_vel_b, actual_ang_vel_b = root_velocity_body(data)
@@ -615,7 +698,7 @@ def main() -> None:
                         data,
                         binding,
                         state,
-                        hopf,
+                        cpg,
                         command_controller,
                         default_angles,
                         root_height,
@@ -630,6 +713,7 @@ def main() -> None:
                     next_frame_time = wall_start_time
                     last_data_time = data.time
                     next_command_print_time = data.time
+                    trace = JointAngleTrace.empty()
                     viewer.sync()
                     continue
 
@@ -642,6 +726,8 @@ def main() -> None:
                 last_data_time = data.time
     finally:
         staged_assets.cleanup()
+
+    plot_joint_angles(trace, root_height)
 
 
 if __name__ == "__main__":

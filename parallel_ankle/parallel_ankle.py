@@ -1,5 +1,7 @@
 """Parallel ankle demo. Frame: +X toe, +Y left, +Z up."""
 import argparse
+import ctypes
+import sys
 import time
 from pathlib import Path
 
@@ -10,16 +12,22 @@ import numpy as np
 MODEL = Path(__file__).with_name("parallel_ankle.xml")
 OUTPUT_DIR = Path(__file__).resolve().parents[2] / "logs" / "parallel_ankle"
 KP, KD, TORQUE_LIMIT = 120.0, 2.0, 20.0
+VK_UP = 0x26
+
+
+def up_arrow_pressed():
+    """Return whether the keyboard Up Arrow key is currently held on Windows."""
+    if sys.platform != "win32":
+        return False
+    return bool(ctypes.windll.user32.GetAsyncKeyState(VK_UP) & 0x8000)
 
 
 class TargetActions:
     """Eight smooth, six-second ankle-space excursions."""
     duration_per_action = 1.0
-    actions_deg = ((0, 0), (0, 0), (0, 0), (0, 0), 
-                   (34, 0), (-34, 0), (0, 30), (0, -30),
+    actions_deg = ((34, 0), (-34, 0), (0, 30), (0, -30),
                    (34, 30), (34, -30), (-34, 30), (-34, -30))
-    names = ("O", "O", "O", "O",
-             "P+", "P-", "R+", "R-", "P+R+", "P+R-", "P-R+", "P-R-")
+    names = ("P+", "P-", "R+", "R-", "P+R+", "P+R-", "P-R+", "P-R-")
 
     @property
     def duration(self):
@@ -221,8 +229,24 @@ def run(mode, no_view):
             viewer.cam.lookat[:], viewer.cam.distance = (0, 0, .26), .95
             viewer.cam.azimuth, viewer.cam.elevation = 25, -15
             wall_start, next_print = time.perf_counter(), 0.0
+            started = False
+            print(f"{mode}: press the Up Arrow key to start motion.", flush=True)
             while viewer.is_running() and data.time < targets.duration:
                 frame_start = time.perf_counter()
+
+                # Keep the mechanism at its initial pose and do not advance
+                # simulation time until the user explicitly starts the test.
+                if not started:
+                    viewer.sync()
+                    if up_arrow_pressed():
+                        started = True
+                        wall_start = time.perf_counter()
+                        next_print = 0.0
+                        print(f"{mode}: motion started.", flush=True)
+                    else:
+                        time.sleep(max(0, 1/60-(time.perf_counter()-frame_start)))
+                    continue
+
                 target_time = min(frame_start-wall_start, data.time+.1)
                 with viewer.lock():
                     while data.time < target_time and data.time < targets.duration:

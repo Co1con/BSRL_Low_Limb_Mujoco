@@ -1,9 +1,11 @@
-policy_path: "{PROJECT_ROOT}/policy/plane/hopf_joint_v4/exported/policy.onnx"
+policy_path: "{PROJECT_ROOT}/policy/plane/cpg_joint/exported/policy.onnx"
 xml_path: "{PROJECT_ROOT}/assets/bsrl/urdf/export_floating.xml"
 
 simulation_duration: 0.0
 simulation_dt: 0.001
 control_decimation: 20
+joint_armature: 0.01
+clip_actions: 5.0
 startup_pause_s: 1.0
 root_height: 0.8665
 
@@ -56,18 +58,6 @@ viewer:
     distance: 3.0
     azimuth: 140.0
     elevation: -20.0
-
-hopf:
-  velocity_freq_slope: 0.48749031
-  velocity_freq_intercept: 0.60252246
-  velocity_freq_min: 0.0
-  velocity_freq_max: 2.0
-  mu: 1.0
-  gamma: 20.0
-  stop_eps: 1.0e-6
-  phase_eps: 2.0e-2
-  return_freq_min: 0.0
-  return_freq_max: 5.0
 
 policy_joint_names:
   - joint_left_hip_yaw
