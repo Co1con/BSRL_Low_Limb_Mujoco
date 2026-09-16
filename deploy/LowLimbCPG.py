@@ -27,6 +27,7 @@ class RhythmHopf:
 
     def reset(self):
         self.reset_phase = float(np.random.choice((0.0, np.pi)))
+        self.next_start_phase = None
         radius = np.sqrt(self.mu)
         self.x = float(radius * np.cos(self.reset_phase))
         self.y = float(radius * np.sin(self.reset_phase))
@@ -55,6 +56,8 @@ class RhythmHopf:
         self.omega = 0.0
         self.is_running = False
         self.stop_requested = False
+        # 真正停稳时只抽签一次；静止期间保持当前相位，避免观测瞬间跳变。
+        self.next_start_phase = float(np.random.choice((0.0, np.pi)))
 
     def step(self, velocity, dt):
         velocity = float(velocity)
@@ -62,6 +65,12 @@ class RhythmHopf:
 
         # 正速度立即更新节律；零速度只提出停车请求。
         if velocity > 0.0:
+            if not self.is_running and self.next_start_phase is not None:
+                self.reset_phase = self.next_start_phase
+                self.next_start_phase = None
+                radius = np.sqrt(self.mu)
+                self.x = float(radius * np.cos(self.reset_phase))
+                self.y = float(radius * np.sin(self.reset_phase))
             self.omega = TWO_PI * self.velocity_to_frequency(velocity)
             self.is_running = True
             self.stop_requested = False
