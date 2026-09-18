@@ -1,0 +1,91 @@
+policy_path: "{PROJECT_ROOT}/policy/plane/unitreeG1_cpg_hk_model/exported/policy.onnx"
+xml_path: "{PROJECT_ROOT}/assets/G1/scene_29dof.xml"
+
+simulation_dt: 0.005
+control_decimation: 4
+simulation_duration: 0.0
+render_fps: 30.0
+max_catchup_s: 0.05
+print_interval_s: 0.5
+startup_pause_s: 0.0
+root_height: 0.8
+fall_height: 0.5
+action_scale: 0.25
+clip_actions: 5.0
+ang_vel_scale: 0.2
+joint_vel_scale: 0.05
+joint_effort_scale: 0.01
+seed: 0
+cmd_init: [0.5, 0.0, 0.0]
+reset_key: "R"
+walk_vx: 0.5
+policy_enabled: true
+
+command_control:
+  debounce_s: 0.2
+  lin_vel_x_levels: [0.0, 0.3, 0.5, 0.8, 1.0, 1.2, 1.5]
+  yaw_rate_step: 0.1
+  yaw_rate_limit: 0.5
+  increase_vx_key: "UP"
+  decrease_vx_key: "DOWN"
+  yaw_left_key: "LEFT"
+  yaw_right_key: "RIGHT"
+  stop_key: "U"
+
+viewer:
+  follow_camera:
+    enabled: true
+    body: "pelvis"
+    distance: 3.0
+    azimuth: 140.0
+    elevation: -20.0
+
+# PhysX articulation DoF order follows breadth-first traversal of the USD joint tree.
+# It differs from both joint_sdk_names and MuJoCo actuator order.
+policy_joint_names:
+  - left_hip_pitch_joint
+  - right_hip_pitch_joint
+  - waist_yaw_joint
+  - left_hip_roll_joint
+  - right_hip_roll_joint
+  - waist_roll_joint
+  - left_hip_yaw_joint
+  - right_hip_yaw_joint
+  - waist_pitch_joint
+  - left_knee_joint
+  - right_knee_joint
+  - left_shoulder_pitch_joint
+  - right_shoulder_pitch_joint
+  - left_ankle_pitch_joint
+  - right_ankle_pitch_joint
+  - left_shoulder_roll_joint
+  - right_shoulder_roll_joint
+  - left_ankle_roll_joint
+  - right_ankle_roll_joint
+  - left_shoulder_yaw_joint
+  - right_shoulder_yaw_joint
+  - left_elbow_joint
+  - right_elbow_joint
+  - left_wrist_roll_joint
+  - right_wrist_roll_joint
+  - left_wrist_pitch_joint
+  - right_wrist_pitch_joint
+  - left_wrist_yaw_joint
+  - right_wrist_yaw_joint
+
+# Matches the init_state saved with this ONNX policy.
+default_joint_angles:
+  left_hip_pitch_joint: -0.1
+  right_hip_pitch_joint: -0.1
+  left_knee_joint: 0.3
+  right_knee_joint: 0.3
+  left_ankle_pitch_joint: -0.2
+  right_ankle_pitch_joint: -0.2
+  left_shoulder_pitch_joint: 0.3
+  right_shoulder_pitch_joint: 0.3
+  left_shoulder_roll_joint: 0.25
+  right_shoulder_roll_joint: -0.25
+  left_elbow_joint: 0.97
+  right_elbow_joint: 0.97
+  left_wrist_roll_joint: 0.15
+  right_wrist_roll_joint: -0.15
