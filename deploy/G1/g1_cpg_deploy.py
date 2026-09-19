@@ -24,7 +24,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DEFAULT_CONFIG = Path(__file__).with_suffix(".yaml")
 
-DEFAULT_RENDER_FPS = 30.0
+DEFAULT_RENDER_FPS = 120.0
 COMMAND_PRINT_INTERVAL_S = 0.5
 KEY_CODES = {
     "UP": glfw.KEY_UP, "ARROWUP": glfw.KEY_UP, "DOWN": glfw.KEY_DOWN, "ARROWDOWN": glfw.KEY_DOWN,
@@ -134,7 +134,7 @@ def plot_joint_angles(trace: JointAngleTrace, target_height: float,
     for joint_index, (axis, name) in enumerate(zip(axes, CPG_JOINT_NAMES)):
         axis.plot(sample_time, actual[:, joint_index], label="Actual")
         axis.plot(sample_time, reference[:, joint_index], label="CPG reference")
-        axis.plot(sample_time, policy_target[:, joint_index], label="Policy target", alpha=0.7)
+        # axis.plot(sample_time, policy_target[:, joint_index], label="Policy target", alpha=0.7)
         axis.set_ylabel(f"{name}\n[rad]")
         axis.grid(alpha=0.25)
         axis.legend(loc="upper right")
