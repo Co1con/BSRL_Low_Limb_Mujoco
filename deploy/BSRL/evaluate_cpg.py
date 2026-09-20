@@ -24,13 +24,14 @@ import bsrl_cpg_deploy as deploy
 
 # (duration in seconds, forward velocity in m/s, yaw rate in rad/s)
 DEFAULT_SCHEDULE = (
-    (2.0, 0.0, 0.0),
-    (4.0, 0.5, 0.0),
-    (4.0, 1.0, 0.0),
-    (2.0, 0.0, 0.0),
-    (4.0, 0.8, 0.25),
-    (4.0, 0.8, -0.25),
-    (3.0, 0.0, 0.0),
+    (5.0, 0.0, 0.0),
+    (5.0, 0.6, 0.0),
+    (5.0, 0.9, 0.0),
+    (5.0, 1.2, 0.0),
+    (5.0, 1.5, 0.0),
+    (5.0, 1.0, 0.0),
+    (5.0, 0.6, 0.0),
+    (5.0, 0.0, 0.0),
 )
 JOINT_LABELS = ("Left hip", "Left knee", "Right hip", "Right knee")
 COLORS = ("#276C9B", "#D98736", "#4D8D73", "#9B5D82")
@@ -177,58 +178,79 @@ def plot_results(rows: list[dict[str, float | int]], output_dir: Path) -> None:
         return np.asarray([row[name] for row in rows], dtype=float)
 
     time = series("time_s")
-    figure, axes = plt.subplots(4, 1, figsize=(15, 11), sharex=True)
-    for axis, name, title, color in zip(
-        axes, ("left_hip", "left_knee", "right_hip", "right_knee"), JOINT_LABELS, COLORS
+    target_vx = series("target_vx_mps")
+    segments = series("segment").astype(int)
+    figure = plt.figure(figsize=(21, 18))
+    grid = figure.add_gridspec(4, 2, height_ratios=(1.0, 1.0, 1.0, 2.0), hspace=0.42, wspace=0.18)
+    ax_vx = figure.add_subplot(grid[0, 0])
+    ax_vy = figure.add_subplot(grid[0, 1])
+    ax_yaw = figure.add_subplot(grid[1, 0])
+    ax_joints = figure.add_subplot(grid[1, 1])
+    ax_frequency = figure.add_subplot(grid[2, :])
+    ax_contacts = figure.add_subplot(grid[3, :])
+
+    ax_vx.plot(time, target_vx, label="target")
+    ax_vx.plot(time, series("actual_vx_mps"), label="actual")
+    ax_vx.set_title("Body-frame x velocity")
+    ax_vx.set_ylabel("m/s")
+    ax_vx.legend(loc="upper right")
+
+    ax_vy.plot(time, np.zeros_like(time), label="target")
+    ax_vy.plot(time, series("actual_vy_mps"), label="actual")
+    ax_vy.set_title("Body-frame y velocity")
+    ax_vy.set_ylabel("m/s")
+    ax_vy.legend(loc="upper right")
+
+    ax_yaw.plot(time, series("target_yaw_rps"), label="target")
+    ax_yaw.plot(time, series("actual_yaw_rps"), label="actual")
+    ax_yaw.set_title("Body yaw rate")
+    ax_yaw.set_ylabel("rad/s")
+    ax_yaw.legend(loc="upper right")
+
+    for name, label in zip(
+        ("left_hip", "left_knee", "right_hip", "right_knee"),
+        ("left_hip_pitch", "left_knee_pitch", "right_hip_pitch", "right_knee_pitch"),
     ):
-        axis.plot(time, series(f"{name}_reference_rad"), color=color, linewidth=1.4, label="CPG reference")
-        axis.plot(time, series(f"{name}_actual_rad"), color="#252D35", linewidth=1.0, alpha=0.8, label="Actual")
-        axis.set_ylabel(f"{title} [rad]")
-        axis.grid(alpha=0.25)
-        axis.legend(loc="upper right", ncol=2)
-    axes[-1].set_xlabel("Time [s]")
-    figure.suptitle("CPG reference and actual joint trajectories")
-    figure.tight_layout()
-    figure.savefig(output_dir / "joint_trajectories.png", dpi=170)
-    plt.close(figure)
+        ax_joints.plot(time, series(f"{name}_actual_rad"), label=label)
+    ax_joints.set_title("Hip/knee pitch joint positions")
+    ax_joints.set_ylabel("rad")
+    ax_joints.legend(loc="upper right")
 
-    figure, axes = plt.subplots(4, 1, figsize=(15, 11), sharex=True)
-    axes[0].plot(time, series("target_vx_mps"), label="Target", linewidth=1.5)
-    axes[0].plot(time, series("actual_vx_mps"), label="Actual", linewidth=1.0)
-    axes[0].set_ylabel("Forward velocity [m/s]")
-    axes[1].plot(time, series("target_yaw_rps"), label="Target", linewidth=1.5)
-    axes[1].plot(time, series("actual_yaw_rps"), label="Actual", linewidth=1.0)
-    axes[1].set_ylabel("Yaw rate [rad/s]")
-    axes[2].step(time, series("left_foot_contact"), where="post", label="Left foot")
-    axes[2].step(time, series("right_foot_contact") + 1.2, where="post", label="Right foot")
-    axes[2].set_yticks((0, 1, 1.2, 2.2), ("L off", "L on", "R off", "R on"))
-    axes[2].set_ylabel("Ground contact")
-    axes[3].plot(time, series("base_height_m"), label="Base height")
-    axes[3].set_ylabel("Base height [m]")
-    for axis in axes:
-        axis.grid(alpha=0.25)
-        axis.legend(loc="upper right", ncol=2)
-    axes[-1].set_xlabel("Time [s]")
-    figure.suptitle("Velocity tracking, foot contacts, and base height")
-    figure.tight_layout()
-    figure.savefig(output_dir / "motion_and_contacts.png", dpi=170)
-    plt.close(figure)
+    ax_frequency.plot(
+        time, series("cpg_frequency_hz"), color="tab:green", linewidth=1.8, label="filtered step frequency"
+    )
+    ax_frequency.set_title("Detected step frequency by target x-velocity segment")
+    ax_frequency.set_ylabel("Hz")
+    ax_frequency.legend(loc="upper right")
 
-    figure, axes = plt.subplots(3, 1, figsize=(15, 9), sharex=True)
-    axes[0].plot(time, np.rad2deg(series("base_roll_rad")), label="Roll")
-    axes[0].plot(time, np.rad2deg(series("base_pitch_rad")), label="Pitch")
-    axes[0].set_ylabel("Base tilt [deg]")
-    axes[1].plot(time, series("actual_vy_mps"), label="Lateral velocity")
-    axes[1].set_ylabel("Lateral velocity [m/s]")
-    axes[2].plot(time, series("torque_rms_nm"), label="Joint torque RMS")
-    axes[2].set_ylabel("Torque [N m]")
-    for axis in axes:
+    segment_ids = np.unique(segments)
+    for order, segment_id in enumerate(segment_ids):
+        mask = segments == segment_id
+        start, end = time[mask][0], time[mask][-1]
+        if order % 2 == 0:
+            ax_frequency.axvspan(start, end, color="#DCE5F2", alpha=0.38, zorder=0)
+        ax_frequency.axvline(start, color="#AAB3BF", linewidth=0.7, alpha=0.65)
+        ax_frequency.text(
+            0.5 * (start + end), 0.93, f"{target_vx[mask][0]:.1f} m/s",
+            transform=ax_frequency.get_xaxis_transform(), ha="center", va="top", color="#4F5965",
+        )
+    ax_frequency.axvline(time[-1], color="#AAB3BF", linewidth=0.7, alpha=0.65)
+
+    left_contact = series("left_foot_contact") > 0.5
+    right_contact = series("right_foot_contact") > 0.5
+    ax_contacts.fill_between(time, 1.15, 1.85, where=left_contact, step="post", color="tab:blue")
+    ax_contacts.fill_between(time, 0.15, 0.85, where=right_contact, step="post", color="tab:orange")
+    ax_contacts.set_ylim(0.0, 2.0)
+    ax_contacts.set_yticks((1.5, 0.5), ("Left foot", "Right foot"))
+    ax_contacts.set_title("Foot ground contact")
+
+    for axis in (ax_vx, ax_vy, ax_yaw, ax_joints, ax_frequency, ax_contacts):
+        axis.set_xlabel("time (s)")
         axis.grid(alpha=0.25)
-        axis.legend(loc="upper right")
-    axes[-1].set_xlabel("Time [s]")
-    figure.suptitle("Balance and control effort")
-    figure.tight_layout()
-    figure.savefig(output_dir / "balance_and_effort.png", dpi=170)
+        axis.set_xlim(time[0], time[-1])
+
+    output_dir.mkdir(parents=True, exist_ok=True)
+    figure.savefig(output_dir / "gait_evaluation.png", dpi=170, bbox_inches="tight")
     plt.close(figure)
 
 
