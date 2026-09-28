@@ -39,6 +39,13 @@ DEFAULT_SCHEDULE = (
     (5.0, 1.0, 0.0),
     (5.0, 0.6, 0.0),
     (5.0, 0.0, 0.0),
+    (5.0, -0.6, 0.0),
+    (5.0, -0.9, 0.0),
+    (5.0, -1.2, 0.0),
+    (5.0, -1.5, 0.0),
+    (5.0, -1.0, 0.0),
+    (5.0, -0.6, 0.0),
+    (5.0, 0.0, 0.0),
 )
 
 
@@ -59,10 +66,10 @@ def load_schedule(path: Path | None) -> tuple[tuple[float, float, float], ...]:
     raw = DEFAULT_SCHEDULE if path is None else yaml.safe_load(path.read_text(encoding="utf-8"))
     schedule = tuple(tuple(map(float, segment)) for segment in raw)
     if not schedule or any(
-        len(segment) != 3 or not np.isfinite(segment).all() or segment[0] <= 0 or segment[1] < 0
+        len(segment) != 3 or not np.isfinite(segment).all() or segment[0] <= 0
         for segment in schedule
     ):
-        raise ValueError("Schedule needs [positive duration, nonnegative vx, finite yaw rate] segments")
+        raise ValueError("Schedule needs [positive duration, finite signed vx, finite yaw rate] segments")
     return schedule
 
 

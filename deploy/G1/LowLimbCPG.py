@@ -1,6 +1,5 @@
 import numpy as np
 
-
 TWO_PI = 2.0 * np.pi
 
 
@@ -21,12 +20,12 @@ class RhythmHopf:
     def __init__(self):
         self.mu = 1.0
         self.gamma = 20.0
-        self.frequency_slope = 0.48749031
-        self.frequency_intercept = 0.60252246
+        self.frequency_slope = 0.3756343915
+        self.frequency_intercept = 0.5563912798
         self.reset()
 
     def reset(self):
-        # Match Isaac Lab: reset to phase zero; choose the leading leg on start.
+        # 静止时使用唯一的规范相位；起步腿在收到非零速度命令时再随机选择。
         self.reset_phase = 0.0
         radius = np.sqrt(self.mu)
         self.x = float(radius * np.cos(self.reset_phase))
@@ -34,6 +33,12 @@ class RhythmHopf:
         self.omega = 0.0
         self.is_running = False
         self.stop_requested = False
+
+    def _prepare_start(self):
+        self.reset_phase = float(np.random.choice((0.0, np.pi)))
+        radius = np.sqrt(self.mu)
+        self.x = float(radius * np.cos(self.reset_phase))
+        self.y = float(radius * np.sin(self.reset_phase))
 
     @property
     def phase(self):
@@ -44,10 +49,10 @@ class RhythmHopf:
         return self.omega / TWO_PI
 
     def velocity_to_frequency(self, velocity):
-        velocity = float(velocity)
-        if velocity <= 0.0:
+        speed = abs(float(velocity))
+        if speed == 0.0:
             return 0.0
-        return self.frequency_slope * velocity + self.frequency_intercept
+        return self.frequency_slope * speed + self.frequency_intercept
 
     def _stop_at_reset_phase(self):
         radius = np.sqrt(self.mu)
@@ -61,14 +66,11 @@ class RhythmHopf:
         velocity = float(velocity)
         dt = _check_dt(dt)
 
-        # 正速度立即更新节律；零速度只提出停车请求。
-        if velocity > 0.0:
+        # 速度幅值决定步频，符号决定极限环旋转方向。
+        if velocity != 0.0:
             if not self.is_running:
-                self.reset_phase = float(np.random.choice((0.0, np.pi)))
-                radius = np.sqrt(self.mu)
-                self.x = float(radius * np.cos(self.reset_phase))
-                self.y = float(radius * np.sin(self.reset_phase))
-            self.omega = TWO_PI * self.velocity_to_frequency(velocity)
+                self._prepare_start()
+            self.omega = np.sign(velocity) * TWO_PI * self.velocity_to_frequency(velocity)
             self.is_running = True
             self.stop_requested = False
         elif self.is_running:
@@ -137,9 +139,6 @@ class JointOscillator:
         rhythm_phase = float(rhythm_phase)
         rhythm_frequency = float(rhythm_frequency)
         dt = _check_dt(dt)
-        if rhythm_frequency < 0.0:
-            raise ValueError("rhythm_frequency must be greater than or equal to zero")
-
         target_phase = rhythm_phase + self.phase_offset
         if not self.initialized:
             # 首帧直接建立目标相位差，避免启动时追相造成大幅超调。
@@ -151,8 +150,10 @@ class JointOscillator:
             TWO_PI * rhythm_frequency
             + self.phase_gain * np.sin(self.phase_error)
         )
-        if rhythm_frequency > 0.0:
-            target_omega = max(0.0, target_omega)
+        if rhythm_frequency != 0.0:
+            target_omega = np.sign(rhythm_frequency) * max(
+                0.0, np.sign(rhythm_frequency) * target_omega
+            )
 
         # Joint 的频率连续逼近目标频率，不复制 Rhythm 的频率阶跃。
         decay = np.exp(-self.frequency_response * dt)
@@ -216,9 +217,17 @@ class LowLimbCPG:
     def __init__(self):
         self.rhythm = RhythmHopf()
 
-        self.phase_speed_slope = -0.3307487167
-        self.phase_speed_intercept = 5.2494736659
+        self.phase_speed_slope = -0.2865263613
+        self.phase_speed_intercept = 5.1776800215
         self.max_integration_dt = 0.005
+        self.start_transition_time = 0.3
+        self.stop_transition_time = 0.3
+        self.standing_angles = {
+            "left_hip": 0.10,
+            "right_hip": 0.10,
+            "left_knee": 0.20,
+            "right_knee": 0.20,
+        }
 
         initial_phase_difference = self.phase_speed_intercept
         self.joints = {
@@ -235,13 +244,16 @@ class LowLimbCPG:
         }
 
         self.velocity = 0.0
+        self.motion_blend = 0.0
         self.hip_knee_phase_difference = initial_phase_difference
-        self.angles = {name: 0.0 for name in self.joints}
+        self.gait_angles = self.standing_angles.copy()
+        self.angles = self.standing_angles.copy()
 
     def reset(self):
-        """与训练环境的 episode reset 一致，清除全部振荡器状态。"""
+        """恢复对称站姿，并清空四关节的振荡状态。"""
         self.rhythm.reset()
         self.velocity = 0.0
+        self.motion_blend = 0.0
         self.hip_knee_phase_difference = self.phase_speed_intercept
         self.joints["left_hip"].phase_offset = 0.0
         self.joints["right_hip"].phase_offset = np.pi
@@ -249,12 +261,27 @@ class LowLimbCPG:
         self.joints["right_knee"].phase_offset = -self.hip_knee_phase_difference + np.pi
         for name, joint in self.joints.items():
             joint.reset()
-            self.shapers[name].angle = 0.0
-            self.angles[name] = 0.0
+            self.shapers[name].angle = self.standing_angles[name]
+            self.gait_angles[name] = self.standing_angles[name]
+            self.angles[name] = self.standing_angles[name]
+
+    def _update_motion_blend(self, moving, dt):
+        transition_time = (
+            self.start_transition_time if moving else self.stop_transition_time
+        )
+        target = 1.0 if moving else 0.0
+        if transition_time <= 0.0:
+            self.motion_blend = target
+            return
+        step = dt / transition_time
+        if moving:
+            self.motion_blend = min(1.0, self.motion_blend + step)
+        else:
+            self.motion_blend = max(0.0, self.motion_blend - step)
 
     def _update_knee_phase_offsets(self):
         self.hip_knee_phase_difference = (
-            self.phase_speed_slope * self.velocity
+            self.phase_speed_slope * abs(self.velocity)
             + self.phase_speed_intercept
         )
         knee_offset = -self.hip_knee_phase_difference
@@ -263,19 +290,28 @@ class LowLimbCPG:
 
     def _step_once(self, target_velocity, dt):
         self.velocity = target_velocity
+        moving = target_velocity != 0.0
+        starting = moving and not self.rhythm.is_running
         self.rhythm.step(target_velocity, dt)
+        self._update_motion_blend(moving, dt)
 
         self._update_knee_phase_offsets()
+        if starting:
+            for joint in self.joints.values():
+                joint.reset()
         for name, joint in self.joints.items():
             joint.step(self.rhythm.phase, self.rhythm.frequency, dt)
-            self.angles[name] = self.shapers[name].step(joint.phase)
+            gait_angle = self.shapers[name].step(joint.phase)
+            self.gait_angles[name] = gait_angle
+            standing_angle = self.standing_angles[name]
+            self.angles[name] = (
+                standing_angle
+                + self.motion_blend * (gait_angle - standing_angle)
+            )
 
     def step(self, target_velocity, dt):
         target_velocity = float(target_velocity)
         dt = _check_dt(dt)
-        if target_velocity < 0.0:
-            raise ValueError("target_velocity must be greater than or equal to zero")
-
         # 训练侧每 0.02 s 刷新一次 OBS，内部按物理步长拆成 4 次更新。
         substeps = max(1, int(np.ceil(dt / self.max_integration_dt)))
         substep_dt = dt / substeps

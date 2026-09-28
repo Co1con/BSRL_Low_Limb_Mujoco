@@ -200,6 +200,10 @@ class CommandController:
         control_config = config.get("command_control", {})
         self.debounce_s = float(control_config.get("debounce_s", 0.02))
         self.vx_levels = np.asarray(control_config.get("lin_vel_x_levels", [0.0, float(config["walk_vx"])]), dtype=np.float32)
+        if self.vx_levels.ndim != 1 or self.vx_levels.size == 0 or not np.all(np.isfinite(self.vx_levels)) or np.any(np.diff(self.vx_levels) <= 0):
+            raise ValueError("lin_vel_x_levels must be a nonempty, strictly increasing list of finite speeds")
+        if not np.any(self.vx_levels == 0.0):
+            raise ValueError("lin_vel_x_levels must include 0.0 for the stop key")
         self.yaw_rate_step = float(control_config.get("yaw_rate_step", 0.1))
         self.yaw_rate_limit = float(control_config.get("yaw_rate_limit", 0.5))
         self.keys = {
@@ -235,7 +239,7 @@ class CommandController:
             return False
         self.last_trigger_time[action] = now
         if action == "stop":
-            self.vx_index = 0
+            self.vx_index = int(np.argmin(np.abs(self.vx_levels)))
             self.vx_value = 0.0
             self.yaw_rate = 0.0
         elif action == "vx_up":
@@ -332,7 +336,7 @@ def main() -> None:
     parser.add_argument("--headless", action="store_true", help="Run without a viewer.")
     parser.add_argument("--check", action="store_true", help="Validate model, policy, and one inference step.")
     parser.add_argument("--duration", type=float, help="Simulation seconds; 0 keeps the viewer open.")
-    parser.add_argument("--vx", type=float, help="Initial forward command in m/s.")
+    parser.add_argument("--vx", type=float, help="Initial signed x velocity in m/s (negative walks backward).")
     parser.add_argument("--vy", type=float, help="Initial lateral command in m/s.")
     parser.add_argument("--yaw", type=float, help="Initial yaw command in rad/s.")
     parser.add_argument("--seed", type=int, help="CPG random seed.")
@@ -351,6 +355,8 @@ def main() -> None:
             initial_command[index] = override
     if initial_command.shape != (3,):
         raise ValueError("cmd_init must be [vx, vy, yaw_rate]")
+    if not np.isfinite(initial_command).all():
+        raise ValueError("cmd_init and command overrides must contain finite velocities")
     cfg["cmd_init"] = initial_command.tolist()
     simulation_dt = float(cfg["simulation_dt"])
     control_decimation = int(cfg["control_decimation"])
