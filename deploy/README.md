@@ -4,9 +4,9 @@ Run commands from the repository root with the `bipedal_mujoco` Python environme
 
 ## Shared controls and output
 
-Both deployment scripts start the policy immediately with a 0.5 m/s forward command and use the same G1-style sky, checker ground, and lighting. Press **Up/Down** to choose forward-speed levels `[0, 0.3, 0.5, 0.8, 1.0, 1.2, 1.5]` m/s, **Left/Right** to change yaw command by 0.1 rad/s, **U** to stop, and **R** to reset the robot and controller. The initial command can also be set with `--vx`, `--vy`, and `--yaw`.
+The G1 HALO script starts at zero command by default. Press **Up/Down** to change signed x velocity, **Left/Right** to change yaw by 0.1 rad/s, **U** to stop, and **R** to reset. The initial command can also be set with `--vx`, `--vy`, and `--yaw`.
 
-Both print target and measured body-frame `vx`, `vy`, and yaw rate every 0.5 s. Closing the viewer opens the same three plots for either robot: `joint_angles` (four CPG hip/knee joints), `motion` (velocity, yaw, height), and `balance` (body roll, pitch, lateral displacement). Add `--plot-dir PATH` to save PNG files, or `--no-plot` to skip interactive plots. `--headless --duration N` runs without the viewer; `--check` validates model loading and one policy inference.
+Both deployment scripts print target and measured body-frame `vx`, `vy`, and yaw rate every 0.5 s. Closing the viewer opens `joint_angles`, `motion`, and `balance` plots. Add `--plot-dir PATH` to save PNG files, or `--no-plot` to skip interactive plots. `--headless --duration N` runs without the viewer; `--check` validates model loading and one policy inference.
 
 The viewer refreshes at 30 FPS by default. `--render-fps` changes this setting. `--diagnostics` prints viewer sync time, simulation lag, and simulated-time/wall-time rate once per simulated second. If rendering is slow on another machine, try `--render-fps 25` or `20`.
 
@@ -23,14 +23,17 @@ The second command runs the separate fixed-command evaluation and writes results
 
 ## G1 29DoF
 
-The G1 code, configuration, and its own CPG implementation are in `deploy/G1/`. It uses `assets/G1/scene_29dof.xml` and the ONNX export under `policy/plane/unitreeG1_cpg_hk_model/`.
+The G1 HALO deployment is in `deploy/G1/`. It uses `assets/G1/scene_29dof.xml` and the V2 ONNX export synchronized from the PPO project at `policy/plane/unitreeG1_HALO/V2/exported/policy.onnx`.
 
 ```powershell
-python deploy/G1/g1_cpg_deploy.py --check
-python deploy/G1/g1_cpg_deploy.py --headless --duration 20 --vx 0.5
-python deploy/G1/g1_cpg_deploy.py --duration 0 --vx 0.5
+python deploy/G1/g1_halo_deploy.py --check --vx 0.8 --yaw 0.3
+python deploy/G1/g1_halo_deploy.py --headless --duration 20 --vx 0.8 --yaw 0.3 --no-plot
+python deploy/G1/g1_halo_deploy.py --duration 0 --vx 0.8 --yaw 0.3
+python deploy/G1/evaluate_halo.py
 ```
 
-The G1 controller uses the observation sequence saved in `policy/plane/unitreeG1_cpg_hk_model/params/env.yaml`: body angular velocity, projected gravity, velocity command, joint position offset, joint velocity, joint effort, last action, and CPG rhythm. The controller period is 0.02 s, action scale is 0.25, and PD gains, velocity limits, and effort limits follow that export. `--stand-only` holds the default pose without balance control and is intended for model diagnostics.
+The G1 controller uses the observation sequence saved in `policy/plane/unitreeG1_HALO/V2/params/env.yaml`: body angular velocity, projected gravity, velocity command, joint position offset, joint velocity, joint effort, last action, and HALO rhythm. The controller period is 0.02 s and action scale is 0.25. Its HALO uses the same yaw gain (0.6), left/right amplitude bounds (0.7–1.3), and 0.1 s amplitude transition as the PPO training code. Left/Right change the yaw command by 0.1 rad/s within ±0.5 rad/s. The policy and HALO both receive the yaw command on each control step. `--stand-only` holds the default pose for model diagnostics.
 
-The saved `joint_sdk_names` order is different from the PhysX articulation order used for the trained policy's observations and actions. `deploy/G1/g1_cpg_deploy.yaml` now uses the breadth-first joint order of the training USD articulation and maps each element to its MuJoCo joint and motor by name. The 0.5 m/s headless rollout stayed upright for 20 s and traveled 9.22 m; a 1.0 m/s rollout stayed upright for 10 s and traveled 8.97 m. A zero-velocity run stayed in place for 10 s. Use `--diagnostics` to print one-second pose/contact summaries; a headless rollout raises an error if pelvis height drops below 0.5 m. Yaw response and long-run drift have not been calibrated against Isaac Lab.
+The saved `joint_sdk_names` order differs from the PhysX articulation order used for policy observations and actions. `deploy/G1/g1_halo_deploy.yaml` uses the training joint order and maps each element to its MuJoCo joint and motor by name. `evaluate_halo.py` runs a forward/backward and left/right turn schedule and writes per-segment yaw and x-velocity errors to `logs/g1_halo_evaluation/`. A headless rollout raises an error if pelvis height drops below 0.5 m. Differences between MuJoCo and Isaac Lab dynamics remain relevant when interpreting tracking quality.
+
+In the local 26 s MuJoCo evaluation, all four `vx=±0.8 m/s`, `yaw=±0.3 rad/s` turn segments remained upright (minimum base height 0.770 m across the schedule). Mean yaw rates had the commanded sign but reached only about ±0.11–0.13 rad/s. This verifies the deployment path and directional response; yaw magnitude tracking still differs from the command.

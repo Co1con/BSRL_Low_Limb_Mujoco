@@ -1,4 +1,4 @@
-policy_path: "{PROJECT_ROOT}/policy/plane/unitreeG1_HALO/exported/policy.onnx"
+policy_path: "{PROJECT_ROOT}/policy/plane/unitreeG1_HALO/V2/exported/policy.onnx"
 xml_path: "{PROJECT_ROOT}/assets/G1/scene_29dof.xml"
 
 simulation_dt: 0.005
@@ -25,7 +25,7 @@ command_control:
   debounce_s: 0.2
   lin_vel_x_levels: [-1.5, -1.2, -1.0, -0.8, -0.5, -0.3, 0.0, 0.3, 0.5, 0.8, 1.0, 1.2, 1.5]
   yaw_rate_step: 0.1
-  yaw_rate_limit: 0.3
+  yaw_rate_limit: 0.5
   increase_vx_key: "UP"
   decrease_vx_key: "DOWN"
   yaw_left_key: "LEFT"

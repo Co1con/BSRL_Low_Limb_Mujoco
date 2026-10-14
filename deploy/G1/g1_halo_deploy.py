@@ -1,4 +1,4 @@
-"""Run the exported 29-DoF G1 CPG policy in MuJoCo."""
+"""Run the exported 29-DoF G1 HALO policy in MuJoCo."""
 
 from __future__ import annotations
 
@@ -18,7 +18,7 @@ import numpy as np
 import onnxruntime as ort
 import yaml
 
-from LowLimbCPG import LowLimbCPG
+from HALO import HALO
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
@@ -62,7 +62,7 @@ def base_roll_pitch(quat: np.ndarray) -> tuple[float, float]:
     return float(roll), float(pitch)
 
 
-CPG_JOINT_NAMES = (
+HALO_JOINT_NAMES = (
     "left_hip_pitch_joint",
     "left_knee_joint",
     "right_hip_pitch_joint",
@@ -70,9 +70,9 @@ CPG_JOINT_NAMES = (
 )
 
 
-def cpg_reference_in_policy_order(cpg: LowLimbCPG) -> np.ndarray:
-    """与训练侧 observations._cpg_angles_to_robot_order 保持同一关节极性。"""
-    angles = cpg.angles
+def halo_reference_in_policy_order(halo: HALO) -> np.ndarray:
+    """与训练侧 observations._halo_angles_to_robot_order 保持同一关节极性。"""
+    angles = halo.angles
     return np.array(
         [-angles["left_hip"], angles["left_knee"],
          -angles["right_hip"], angles["right_knee"]],
@@ -82,7 +82,7 @@ def cpg_reference_in_policy_order(cpg: LowLimbCPG) -> np.ndarray:
 
 @dataclass
 class JointAngleTrace:
-    """暂存控制采样时刻的四关节实际角、CPG 参考角和策略目标角。"""
+    """暂存控制采样时刻的四关节实际角、HALO 参考角和策略目标角。"""
 
     time: list[float]
     actual: list[np.ndarray]
@@ -129,12 +129,10 @@ def plot_joint_angles(trace: JointAngleTrace, target_height: float,
     sample_time = np.asarray(trace.time)
     actual = np.stack(trace.actual)
     reference = np.stack(trace.reference)
-    policy_target = np.stack(trace.policy_target)
     figure, axes = plt.subplots(4, 1, sharex=True, figsize=(14, 10))
-    for joint_index, (axis, name) in enumerate(zip(axes, CPG_JOINT_NAMES)):
+    for joint_index, (axis, name) in enumerate(zip(axes, HALO_JOINT_NAMES)):
         axis.plot(sample_time, actual[:, joint_index], label="Actual")
-        axis.plot(sample_time, reference[:, joint_index], label="CPG reference")
-        # axis.plot(sample_time, policy_target[:, joint_index], label="Policy target", alpha=0.7)
+        axis.plot(sample_time, reference[:, joint_index], label="HALO reference")
         axis.set_ylabel(f"{name}\n[rad]")
         axis.grid(alpha=0.25)
         axis.legend(loc="upper right")
@@ -312,7 +310,7 @@ def joint_binding(model: mujoco.MjModel, names: list[str]) -> tuple[np.ndarray, 
 
 def observation(data: mujoco.MjData, qpos_ids: np.ndarray, qvel_ids: np.ndarray,
                 default_q: np.ndarray, effort: np.ndarray, last_action: np.ndarray,
-                command: np.ndarray, cpg: LowLimbCPG, cfg: dict) -> np.ndarray:
+                command: np.ndarray, halo: HALO, cfg: dict) -> np.ndarray:
     rot = np.empty(9, dtype=np.float64)
     mujoco.mju_quat2Mat(rot, data.qpos[3:7])
     gravity = rot.reshape(3, 3).T @ np.array([0.0, 0.0, -1.0])
@@ -321,7 +319,7 @@ def observation(data: mujoco.MjData, qpos_ids: np.ndarray, qvel_ids: np.ndarray,
         data.qpos[qpos_ids] - default_q,
         data.qvel[qvel_ids] * cfg["joint_vel_scale"],
         effort * cfg["joint_effort_scale"], last_action,
-        [cpg.rhythm.x, cpg.rhythm.y],
+        [halo.rhythm.x, halo.rhythm.y],
     )).astype(np.float32)
     if obs.shape != (127,) or not np.isfinite(obs).all():
         raise ValueError("Expected 127 finite G1 observations")
@@ -339,7 +337,7 @@ def main() -> None:
     parser.add_argument("--vx", type=float, help="Initial signed x velocity in m/s (negative walks backward).")
     parser.add_argument("--vy", type=float, help="Initial lateral command in m/s.")
     parser.add_argument("--yaw", type=float, help="Initial yaw command in rad/s.")
-    parser.add_argument("--seed", type=int, help="CPG random seed.")
+    parser.add_argument("--seed", type=int, help="HALO random seed.")
     parser.add_argument("--render-fps", type=float, help="Viewer frames per second.")
     parser.add_argument("--no-plot", action="store_true", help="Skip trajectory plots when the run ends.")
     parser.add_argument("--plot-dir", type=Path, help="Also save trajectory plots to this directory.")
@@ -396,7 +394,7 @@ def main() -> None:
         joint_ids = [mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name) for name in names]
         model.jnt_actfrcrange[joint_ids, 0] = -effort_limits
         model.jnt_actfrcrange[joint_ids, 1] = effort_limits
-        cpg_joint_ids = np.asarray([names.index(name) for name in CPG_JOINT_NAMES], dtype=np.int32)
+        halo_joint_ids = np.asarray([names.index(name) for name in HALO_JOINT_NAMES], dtype=np.int32)
         pelvis_id = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY, "pelvis")
         if pelvis_id < 0:
             raise ValueError("G1 pelvis body not found")
@@ -406,7 +404,7 @@ def main() -> None:
         if len(inputs) != 1 or len(outputs) != 1 or inputs[0].shape != [1, 127] or outputs[0].shape != [1, 29]:
             raise ValueError("Expected ONNX [1, 127] -> [1, 29]")
         input_name, output_name = inputs[0].name, outputs[0].name
-        cpg = LowLimbCPG()
+        halo = HALO()
         command_controller = CommandController(cfg)
         command = np.asarray(cfg["cmd_init"], dtype=np.float32)
         last_action = np.zeros(29, dtype=np.float32)
@@ -414,8 +412,8 @@ def main() -> None:
         target_q = default_q.copy()
 
         def update_policy() -> None:
-            cpg.step(float(command[0]), simulation_dt * control_decimation)
-            obs = observation(data, qpos_ids, qvel_ids, default_q, effort, last_action, command, cpg, cfg)
+            halo.step(float(command[0]), float(command[2]), simulation_dt * control_decimation)
+            obs = observation(data, qpos_ids, qvel_ids, default_q, effort, last_action, command, halo, cfg)
             action = session.run([output_name], {input_name: obs[None, :]})[0].reshape(-1)
             if action.shape != (29,) or not np.isfinite(action).all():
                 raise ValueError("Expected 29 finite policy actions")
@@ -429,7 +427,7 @@ def main() -> None:
             data.qpos[qpos_ids] = default_q
             data.qvel[:] = 0.0
             data.ctrl[:] = 0.0
-            cpg.reset()
+            halo.reset()
             last_action.fill(0.0)
             effort.fill(0.0)
             target_q[:] = default_q
@@ -542,9 +540,9 @@ def main() -> None:
                         roll, pitch = base_roll_pitch(data.qpos[3:7])
                         trace.append(
                             data.time - sim_start_time,
-                            data.qpos[qpos_ids[cpg_joint_ids]],
-                            cpg_reference_in_policy_order(cpg),
-                            target_q[cpg_joint_ids],
+                            data.qpos[qpos_ids[halo_joint_ids]],
+                            halo_reference_in_policy_order(halo),
+                            target_q[halo_joint_ids],
                             command,
                             linear_velocity,
                             float(angular_velocity[2]),

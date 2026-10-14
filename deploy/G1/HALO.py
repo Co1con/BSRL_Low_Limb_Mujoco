@@ -20,8 +20,9 @@ class RhythmHopf:
     def __init__(self):
         self.mu = 1.0
         self.gamma = 20.0
-        self.frequency_slope = 0.3756343915
-        self.frequency_intercept = 0.5563912798
+        self.frequency_slope = 0.48749031
+        self.frequency_intercept = 0.60252246
+        self.direction_transition_time = 0.2
         self.reset()
 
     def reset(self):
@@ -62,15 +63,19 @@ class RhythmHopf:
         self.is_running = False
         self.stop_requested = False
 
-    def step(self, velocity, dt):
+    def step(self, velocity, dt, moving=None):
         velocity = float(velocity)
         dt = _check_dt(dt)
+        if moving is None:
+            moving = velocity != 0.0
 
         # 速度幅值决定步频，符号决定极限环旋转方向。
-        if velocity != 0.0:
+        if moving:
             if not self.is_running:
                 self._prepare_start()
-            self.omega = np.sign(velocity) * TWO_PI * self.velocity_to_frequency(velocity)
+            commanded_omega = np.sign(velocity) * TWO_PI * self.velocity_to_frequency(velocity)
+            decay = np.exp(-dt / self.direction_transition_time)
+            self.omega = commanded_omega + (self.omega - commanded_omega) * decay
             self.is_running = True
             self.stop_requested = False
         elif self.is_running:
@@ -211,17 +216,22 @@ class JointShaper:
         return self.angle
 
 
-class LowLimbCPG:
+class HALO:
     """组合速度驱动的节律、四关节相位协调和关节波形整形。"""
 
     def __init__(self):
         self.rhythm = RhythmHopf()
 
-        self.phase_speed_slope = -0.2865263613
-        self.phase_speed_intercept = 5.1776800215
+        self.phase_speed_slope = -0.3307487167
+        self.phase_speed_intercept = 5.2494736659
         self.max_integration_dt = 0.005
+        self.zero_hold_time = 0.06
         self.start_transition_time = 0.3
         self.stop_transition_time = 0.3
+        self.yaw_amplitude_gain = 0.6
+        self.amplitude_min = 0.7
+        self.amplitude_max = 1.3
+        self.amplitude_transition_time = 0.1
         self.standing_angles = {
             "left_hip": 0.10,
             "right_hip": 0.10,
@@ -244,7 +254,14 @@ class LowLimbCPG:
         }
 
         self.velocity = 0.0
+        self.yaw_target_velocity = 0.0
+        self.yaw_scale = 0.0
+        self.amplitude = dict.fromkeys(self.standing_angles, 1.0)
         self.motion_blend = 0.0
+        self.zero_elapsed = 0.0
+        self.blend_start = 0.0
+        self.blend_target = 0.0
+        self.blend_elapsed = 0.0
         self.hip_knee_phase_difference = initial_phase_difference
         self.gait_angles = self.standing_angles.copy()
         self.angles = self.standing_angles.copy()
@@ -253,7 +270,14 @@ class LowLimbCPG:
         """恢复对称站姿，并清空四关节的振荡状态。"""
         self.rhythm.reset()
         self.velocity = 0.0
+        self.yaw_target_velocity = 0.0
+        self.yaw_scale = 0.0
+        self.amplitude = dict.fromkeys(self.standing_angles, 1.0)
         self.motion_blend = 0.0
+        self.zero_elapsed = 0.0
+        self.blend_start = 0.0
+        self.blend_target = 0.0
+        self.blend_elapsed = 0.0
         self.hip_knee_phase_difference = self.phase_speed_intercept
         self.joints["left_hip"].phase_offset = 0.0
         self.joints["right_hip"].phase_offset = np.pi
@@ -266,18 +290,16 @@ class LowLimbCPG:
             self.angles[name] = self.standing_angles[name]
 
     def _update_motion_blend(self, moving, dt):
-        transition_time = (
-            self.start_transition_time if moving else self.stop_transition_time
-        )
         target = 1.0 if moving else 0.0
-        if transition_time <= 0.0:
-            self.motion_blend = target
-            return
-        step = dt / transition_time
-        if moving:
-            self.motion_blend = min(1.0, self.motion_blend + step)
-        else:
-            self.motion_blend = max(0.0, self.motion_blend - step)
+        if target != self.blend_target:
+            self.blend_start = self.motion_blend
+            self.blend_elapsed = 0.0
+            self.blend_target = target
+        duration = self.start_transition_time if moving else self.stop_transition_time
+        self.blend_elapsed = min(self.blend_elapsed + dt, duration)
+        progress = self.blend_elapsed / duration
+        smoothstep = progress * progress * (3.0 - 2.0 * progress)
+        self.motion_blend = self.blend_start + (target - self.blend_start) * smoothstep
 
     def _update_knee_phase_offsets(self):
         self.hip_knee_phase_difference = (
@@ -288,11 +310,25 @@ class LowLimbCPG:
         self.joints["left_knee"].phase_offset = knee_offset
         self.joints["right_knee"].phase_offset = knee_offset + np.pi
 
-    def _step_once(self, target_velocity, dt):
+    def _update_amplitude(self, target_velocity, yaw_target_velocity, dt):
+        target_scale = np.clip(
+            self.yaw_amplitude_gain * yaw_target_velocity * np.sign(target_velocity),
+            -0.3, 0.3,
+        )
+        response = 1.0 - np.exp(-dt / self.amplitude_transition_time)
+        self.yaw_scale += response * (target_scale - self.yaw_scale)
+        left = float(np.clip(1.0 - self.yaw_scale, self.amplitude_min, self.amplitude_max))
+        right = float(np.clip(1.0 + self.yaw_scale, self.amplitude_min, self.amplitude_max))
+        self.amplitude.update(left_hip=left, right_hip=right, left_knee=left, right_knee=right)
+
+    def _step_once(self, target_velocity, yaw_target_velocity, dt):
         self.velocity = target_velocity
-        moving = target_velocity != 0.0
+        self.yaw_target_velocity = yaw_target_velocity
+        self._update_amplitude(target_velocity, yaw_target_velocity, dt)
+        self.zero_elapsed = self.zero_elapsed + dt if target_velocity == 0.0 else 0.0
+        moving = target_velocity != 0.0 or (self.rhythm.is_running and self.zero_elapsed < self.zero_hold_time)
         starting = moving and not self.rhythm.is_running
-        self.rhythm.step(target_velocity, dt)
+        self.rhythm.step(target_velocity, dt, moving=moving)
         self._update_motion_blend(moving, dt)
 
         self._update_knee_phase_offsets()
@@ -306,16 +342,17 @@ class LowLimbCPG:
             standing_angle = self.standing_angles[name]
             self.angles[name] = (
                 standing_angle
-                + self.motion_blend * (gait_angle - standing_angle)
+                + self.motion_blend * self.amplitude[name] * (gait_angle - standing_angle)
             )
 
-    def step(self, target_velocity, dt):
+    def step(self, target_velocity, yaw_target_velocity, dt):
         target_velocity = float(target_velocity)
+        yaw_target_velocity = float(yaw_target_velocity)
         dt = _check_dt(dt)
         # 训练侧每 0.02 s 刷新一次 OBS，内部按物理步长拆成 4 次更新。
         substeps = max(1, int(np.ceil(dt / self.max_integration_dt)))
         substep_dt = dt / substeps
         for _ in range(substeps):
-            self._step_once(target_velocity, substep_dt)
+            self._step_once(target_velocity, yaw_target_velocity, substep_dt)
 
         return self.angles.copy()
