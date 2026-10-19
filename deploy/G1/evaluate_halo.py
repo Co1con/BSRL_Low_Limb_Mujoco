@@ -30,15 +30,37 @@ JOINT_LABELS = ("Left hip", "Left knee", "Right hip", "Right knee")
 COLORS = ("#276C9B", "#D98736", "#4D8D73", "#9B5D82")
 
 # (duration in seconds, forward velocity in m/s, yaw rate in rad/s)
-DEFAULT_SCHEDULE = (
-    (2.0, 0.0, 0.0),
-    (3.0, 0.8, 0.0),
-    (4.0, 0.8, 0.3),
-    (4.0, 0.8, -0.3),
-    (3.0, -0.8, 0.0),
-    (4.0, -0.8, 0.3),
-    (4.0, -0.8, -0.3),
-    (2.0, 0.0, 0.0),
+DEFAULT_LINEAR_SCHEDULE = (
+    (5.0, 0.0, 0.0),
+    (5.0, 0.6, 0.0),
+    (5.0, 0.9, 0.0),
+    (5.0, 1.2, 0.0),
+    (5.0, 1.5, 0.0),
+    (5.0, 1.0, 0.0),
+    (5.0, 0.5, 0.0),
+    (5.0, 0.0, 0.0),
+    (5.0, -0.6, 0.0),
+    (5.0, -0.9, 0.0),
+    (5.0, -1.2, 0.0),
+    (5.0, -1.5, 0.0),
+    (5.0, -1.0, 0.0),
+    (5.0, -0.5, 0.0),
+    (5.0, -0.0, 0.0),
+)
+DEFAULT_ANGULAR_SCHEDULE = (
+    (5.0, 1.0, 0.0),
+    (5.0, 1.0, 0.1),
+    (5.0, 1.0, 0.3),
+    (5.0, 1.0, 0.5),
+    (5.0, 1.0, 0.4),
+    (5.0, 1.0, 0.2),
+    (5.0, 1.0, 0.0),
+    (5.0, 1.0, -0.1),
+    (5.0, 1.0, -0.3),
+    (5.0, 1.0, -0.5),
+    (5.0, 1.0, -0.4),
+    (5.0, 1.0, -0.2),
+    (5.0, 1.0, 0.0),
 )
 
 
@@ -50,19 +72,21 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument(
         "--schedule",
         type=Path,
-        help="Optional YAML list of [duration_s, target_vx_mps, target_yaw_rps] segments.",
+        help="Optional YAML list of [duration_s, target_vx_mps, target_yaw_rps] segments for the x-velocity test; yaw must be zero.",
     )
     return parser.parse_args()
 
 
 def load_schedule(path: Path | None) -> tuple[tuple[float, float, float], ...]:
-    raw = DEFAULT_SCHEDULE if path is None else yaml.safe_load(path.read_text(encoding="utf-8"))
+    raw = DEFAULT_LINEAR_SCHEDULE if path is None else yaml.safe_load(path.read_text(encoding="utf-8"))
     schedule = tuple(tuple(map(float, segment)) for segment in raw)
     if not schedule or any(
         len(segment) != 3 or not np.isfinite(segment).all() or segment[0] <= 0
         for segment in schedule
     ):
         raise ValueError("Schedule needs [positive duration, finite signed vx, finite yaw rate] segments")
+    if any(yaw != 0.0 for _, _, yaw in schedule):
+        raise ValueError("The x-velocity test requires zero target yaw rate in every segment")
     return schedule
 
 
@@ -80,7 +104,7 @@ def foot_contacts(model: mujoco.MjModel, data: mujoco.MjData, foot_ids: tuple[in
 
 
 def simulate(
-    config: dict, schedule: tuple[tuple[float, float, float], ...], seed: int
+    config: dict, schedule: tuple[tuple[float, float, float], ...], seed: int,
 ) -> list[dict[str, float | int]]:
     np.random.seed(seed)
     simulation_dt = float(config["simulation_dt"])
@@ -139,7 +163,8 @@ def simulate(
             while elapsed_steps < end_step:
                 command[:] = (vx, 0.0, yaw)
                 halo.step(vx, yaw, control_dt)
-                obs = deploy.observation(data, qpos_ids, qvel_ids, default_q, effort, last_action, command, halo, config)
+                obs = deploy.observation(data, qpos_ids, qvel_ids, default_q, effort, last_action,
+                                         command, halo, config)
                 action = session.run([output_name], {input_name: obs[None, :]})[0].reshape(-1)
                 last_action[:] = np.clip(action, -float(config["clip_actions"]), float(config["clip_actions"]))
                 target_q[:] = default_q + float(config["action_scale"]) * last_action
@@ -178,11 +203,23 @@ def simulate(
         return rows
 
 
-def plot_results(rows: list[dict[str, float | int]], output_dir: Path) -> None:
+def plot_results(rows: list[dict[str, float | int]], output_dir: Path, *, angular_first: bool = False) -> None:
     def series(name: str) -> np.ndarray:
         return np.asarray([row[name] for row in rows], dtype=float)
 
     time = series("time_s")
+    # Smooth only plotted measurements; traces and metrics retain raw values.
+    smoothing_seconds = {"actual_vx_mps": 0.5, "actual_vy_mps": 1.0, "actual_yaw_rps": 1.0}
+    sample_dt = float(np.median(np.diff(time)))
+
+    def plotted_velocity(name: str) -> np.ndarray:
+        values = series(name)
+        window = max(1, round(smoothing_seconds[name] / sample_dt))
+        left = window // 2
+        right = window - 1 - left
+        return np.convolve(np.pad(values, (left, right), mode="edge"),
+                           np.ones(window) / window, mode="valid")
+
     target_vx = series("target_vx_mps")
     target_yaw = series("target_yaw_rps")
     segments = series("segment").astype(int)
@@ -195,23 +232,28 @@ def plot_results(rows: list[dict[str, float | int]], output_dir: Path) -> None:
     ax_frequency = figure.add_subplot(grid[2, :])
     ax_contacts = figure.add_subplot(grid[3, :])
 
-    ax_vx.plot(time, target_vx, label="target")
-    ax_vx.plot(time, series("actual_vx_mps"), label="actual")
-    ax_vx.set_title("Body-frame x velocity")
-    ax_vx.set_ylabel("m/s")
-    ax_vx.legend(loc="upper right")
+    first_key = "yaw" if angular_first else "vx"
+    second_key = "vx" if angular_first else "yaw"
+    tracking = {
+        "vx": ("target_vx_mps", "actual_vx_mps", "Body-frame x velocity", "m/s"),
+        "yaw": ("target_yaw_rps", "actual_yaw_rps", "Body yaw rate", "rad/s"),
+    }
+    for axis, key in ((ax_vx, first_key), (ax_yaw, second_key)):
+        target_name, actual_name, title, unit = tracking[key]
+        axis.plot(time, series(target_name), label="target")
+        if angular_first and key == "yaw":
+            axis.plot(time, 0.5 * series(target_name), linestyle="--", label="target × 0.5")
+        axis.plot(time, plotted_velocity(actual_name), label="actual")
+        axis.set_title(title)
+        axis.set_ylabel(unit)
+        axis.legend(loc="upper right")
 
     ax_vy.plot(time, np.zeros_like(time), label="target")
-    ax_vy.plot(time, series("actual_vy_mps"), label="actual")
+    ax_vy.plot(time, plotted_velocity("actual_vy_mps"), label="actual")
     ax_vy.set_title("Body-frame y velocity")
     ax_vy.set_ylabel("m/s")
     ax_vy.legend(loc="upper right")
 
-    ax_yaw.plot(time, series("target_yaw_rps"), label="target")
-    ax_yaw.plot(time, series("actual_yaw_rps"), label="actual")
-    ax_yaw.set_title("Body yaw rate")
-    ax_yaw.set_ylabel("rad/s")
-    ax_yaw.legend(loc="upper right")
 
     for name, label in zip(
         ("left_hip", "left_knee", "right_hip", "right_knee"),
@@ -308,25 +350,32 @@ def summarize(rows: list[dict[str, float | int]]) -> dict[str, object]:
     return summary
 
 
-def main() -> None:
-    args = parse_args()
-    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
-    schedule = load_schedule(args.schedule)
-    rows = simulate(config, schedule, args.seed)
-    args.output_dir.mkdir(parents=True, exist_ok=True)
-    with (args.output_dir / "trace.csv").open("w", newline="", encoding="utf-8") as file:
+def run_evaluation(config: dict, schedule: tuple[tuple[float, float, float], ...], seed: int,
+                   output_dir: Path, config_path: Path, *, angular_first: bool) -> None:
+    rows = simulate(config, schedule, seed)
+    output_dir.mkdir(parents=True, exist_ok=True)
+    with (output_dir / "trace.csv").open("w", newline="", encoding="utf-8") as file:
         writer = csv.DictWriter(file, fieldnames=rows[0].keys()); writer.writeheader(); writer.writerows(rows)
     summary = summarize(rows)
-    summary["seed"] = args.seed
-    summary["config_file"] = str(args.config.resolve())
+    summary["seed"] = seed
+    summary["config_file"] = str(config_path.resolve())
     summary["schedule"] = [
         {"duration_s": duration, "target_vx_mps": vx, "target_yaw_rps": yaw}
         for duration, vx, yaw in schedule
     ]
-    (args.output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
-    plot_results(rows, args.output_dir)
-    print(f"Saved {len(rows)} samples and plots to {args.output_dir.resolve()}")
-    print(json.dumps(summary, indent=2))
+    (output_dir / "summary.json").write_text(json.dumps(summary, indent=2), encoding="utf-8")
+    plot_results(rows, output_dir, angular_first=angular_first)
+    print(f"Saved {len(rows)} samples and plot to {output_dir.resolve()}")
+
+
+def main() -> None:
+    args = parse_args()
+    config = yaml.safe_load(args.config.read_text(encoding="utf-8"))
+    run_evaluation(config, load_schedule(args.schedule), args.seed,
+                   args.output_dir / "linear_velocity", args.config, angular_first=False)
+    run_evaluation(config, DEFAULT_ANGULAR_SCHEDULE, args.seed,
+                   args.output_dir / "angular_velocity", args.config,
+                   angular_first=True)
 
 
 if __name__ == "__main__":
